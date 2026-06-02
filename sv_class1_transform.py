@@ -21,8 +21,18 @@ def extract_target_members(lines_dict):
 # 一类杆件所需参数读取
 def parameter_extract(lines_dict):
     lines = list(lines_dict.values())
-    if len(lines) < 2:
-        raise ValueError("提取一类杆件失败：需要至少两条杆件用于参数计算。")
+    # if len(lines) < 2:
+    #     raise ValueError("提取一类杆件失败：需要至少两条杆件用于参数计算。")
+    if len(lines) < 1:
+        raise ValueError("提取一类杆件失败：需要至少一条杆件用于参数计算。")
+
+    # 如果只有一条杆件，对称它以获得完整的参数
+    if len(lines) == 1:
+        line = lines[0]
+        (x1, y1), (x2, y2) = line
+        # 添加关于Y轴对称的杆件
+        symmetric_line = ((-x1, y1), (-x2, y2))
+        lines = [line, symmetric_line]
 
     kb_list = []
     for line in lines:

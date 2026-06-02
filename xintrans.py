@@ -226,20 +226,21 @@ def find_ganjian_by_nodes(node_list, coordinates_data, threshold):
 
     return node_to_members
 
-def calc_jiandian_xyz(coordinates_data, drawing_id, pj,pj_view_index):
+def calc_jiandian_xyz(coordinates_data, drawing_id, pj,pj_view_index, rod_a_id, rod_b_id):
     """
     pj_view_index：0代表担架的上端点，1代表担架的下端点
+    rod_a_id, rod_b_id：当前视图中两根一类杆件的实际编号
     生成尖点的真实XYZ的值
     输出：10020：（x,y,z）
     """
-    start_01x = coordinates_data[drawing_id * 100 + 1][0][0]
-    start_01y = coordinates_data[drawing_id * 100 + 1][0][1]
-    start_02x = coordinates_data[drawing_id * 100 + 2][0][0]
-    start_02y = coordinates_data[drawing_id * 100 + 2][0][1]
-    end_01x = coordinates_data[drawing_id * 100 + 1][1][0]
-    end_01y = coordinates_data[drawing_id * 100 + 1][1][1]
-    end_02x = coordinates_data[drawing_id * 100 + 2][1][0]
-    end_02y = coordinates_data[drawing_id * 100 + 2][1][1]
+    start_01x = coordinates_data[rod_a_id][0][0]
+    start_01y = coordinates_data[rod_a_id][0][1]
+    start_02x = coordinates_data[rod_b_id][0][0]
+    start_02y = coordinates_data[rod_b_id][0][1]
+    end_01x = coordinates_data[rod_a_id][1][0]
+    end_01y = coordinates_data[rod_a_id][1][1]
+    end_02x = coordinates_data[rod_b_id][1][0]
+    end_02y = coordinates_data[rod_b_id][1][1]
     midr = ((end_01x + end_02x) / 2, (end_01y + end_02y) / 2)  # 计算301和302两个右端点的中点
     midl = ((start_01x + start_02x) / 2, (start_01y + start_02y) / 2)  # 计算301和302两个左端点的中点
     h = dist_points(midl, midr)  # 计算左中点到右中点的距离
@@ -539,6 +540,9 @@ def trans(file_path, drawing_id, data1, drawing_type):
         file_path: 包含三视图坐标数据的文件路径
         drawing_id: 图纸序号
     """
+    # 记录本次担架处理前全局列表的长度，用于只对本担架新增的节点/杆件做后处理
+    jiedian_start = len(jiedian)
+    ganjian_start = len(ganjian)
 
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -571,23 +575,36 @@ def trans(file_path, drawing_id, data1, drawing_type):
         pj = [pj[i] for i in (0, 2, 4, 6)]
     elif drawing_type in ("J3", "J4"):
         pj = [pj[i] for i in (1, 0, 3, 2, 5, 4, 7, 6)]
-
+    elif drawing_type in "T7883":
+        pj = [pj[i] for i in (0,2)]
 
     jiandian_id = (drawing_id * 100 + 1) * 100
+    id_prefix = drawing_id + 2 if drawing_type == "T7883" else drawing_id  # T7883: 1→3, 2→4
+    jiandian_id = (id_prefix * 100 + 1) * 100
 
-    if(drawing_id * 100 + 1 in coordinatesBottom_data): # 处理下面的担架（非最上面的两个担架）
+    if drawing_type == "T7883" or (drawing_id * 100 + 1 in coordinatesBottom_data): # 处理下面的担架（非最上面的两个担架）
 
-        rod_101_id, rod_103_id = detect_main_rods_enhanced(coordinatesFront_data)
-        rod_101_id, rod_102_id = detect_main_rods_enhanced(coordinatesBottom_data)
-        rod_103_id, rod_104_id = detect_main_rods_enhanced(coordinatesOverhead_data)
-        main_rod_ids = [rod_101_id, rod_102_id, rod_103_id, rod_104_id]
+        rod_front_a, rod_front_b = detect_main_rods_enhanced(coordinatesFront_data)
+        rod_bottom_a, rod_bottom_b = detect_main_rods_enhanced(coordinatesBottom_data)
+        rod_overhead_a, rod_overhead_b = detect_main_rods_enhanced(coordinatesOverhead_data)
+
+        # T7883 正视图一类杆件方向修正：
+        # 本分支约定 rod_front_a 对应 pj 下端点(index1)、rod_front_b 对应 pj 上端点(index0)。
+        # 但 T7883 中编号小的(如105)是上杆、编号大的(如107)是下杆，与约定相反，
+        # 故对调 a/b，使 section2 的二类节点Y引用与 section5 的一类杆件接续都落到正确的上下端点。
+        if drawing_type == "T7883":
+            rod_front_a, rod_front_b = rod_front_b, rod_front_a
+
+        rod_101_id, rod_102_id = rod_bottom_a, rod_bottom_b
+        rod_103_id, rod_104_id = rod_overhead_a, rod_overhead_b
+        main_rod_ids = [rod_101_id, rod_102_id, rod_103_id, rod_104_id, rod_front_a, rod_front_b]
 
 
         ############################################################################################################
         # 1. 计算尖点的三维信息
         ############################################################################################################
 
-        newx, newy, newz = calc_jiandian_xyz(coordinatesBottom_data, drawing_id, pj,1)
+        newx, newy, newz = calc_jiandian_xyz(coordinatesBottom_data, drawing_id, pj,1, rod_101_id, rod_102_id)
         new_node = {
             "node_id": f"{jiandian_id + 20}",
             "node_type": 11,  # 根据实际情况设置节点类型
@@ -604,11 +621,11 @@ def trans(file_path, drawing_id, data1, drawing_type):
         ############################################################################################################
 
         # 得到两个一类杆件上的交点
-        jiaodian_101,jiaodian_103 = get_jiaodian_on_ganjian(coordinatesFront_data,drawing_id, pj, rod_101_id,rod_103_id, yuzhi)
+        jiaodian_101,jiaodian_103 = get_jiaodian_on_ganjian(coordinatesFront_data,drawing_id, pj, rod_front_a,rod_front_b, yuzhi)
 
         # 得到这些交点的真实x的值
-        real_101 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_101, newx, pj, rod_101_id, 1, 1)
-        real_103 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_103, newx, pj, rod_103_id, 0, 0)
+        real_101 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_101, newx, pj, rod_front_a, 1, 1)
+        real_103 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_103, newx, pj, rod_front_b, 0, 0)
 
         if (pj[drawing_id - 1][1][1][0] > 0): # 第 drawing_id 号担架下连接点的 x 坐标
             left_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点的节点编号
@@ -618,7 +635,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
             right_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点
 
         # 标记交点中的端点
-        real_101 = mark_endpoint_for_real_points(real_101,coordinatesFront_data,rod_101_id,left_3d_id,right_3d_id,yuzhi)
+        real_101 = mark_endpoint_for_real_points(real_101,coordinatesFront_data,rod_front_a,left_3d_id,right_3d_id,yuzhi)
 
         if (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][0][0]  # 303 与塔身相交端点
@@ -626,7 +643,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
         else:
             left_3d_id = f"{jiandian_id + 20}"
             right_3d_id = pj[drawing_id - 1][0][0]  # 301 与塔身相交端点
-        real_103 = mark_endpoint_for_real_points(real_103, coordinatesFront_data, rod_103_id, left_3d_id, right_3d_id,yuzhi)
+        real_103 = mark_endpoint_for_real_points(real_103, coordinatesFront_data, rod_front_b, left_3d_id, right_3d_id,yuzhi)
 
         # ----------------生成节点---------------------------------------------------------------------------------------#
         # 为交点创建节点
@@ -646,7 +663,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}191{new_node_cnt}0"
+            node_id = f"{id_prefix}191{new_node_cnt}0"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -673,7 +690,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}193{new_node_cnt}0"
+            node_id = f"{id_prefix}193{new_node_cnt}0"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -745,7 +762,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}291{new_node_cnt}0"
+            node_id = f"{id_prefix}291{new_node_cnt}0"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -772,7 +789,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}291{new_node_cnt}2"
+            node_id = f"{id_prefix}291{new_node_cnt}2"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -853,9 +870,9 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 # 编号规则：前9个用 {drawing_id}491X0，超过9个用 {drawing_id}591X0
                 if new_node_cnt > 9:
                     node_seq = new_node_cnt - 9
-                    node_id = f"{drawing_id}591{node_seq}0"
+                    node_id = f"{id_prefix}591{node_seq}0"
                 else:
-                    node_id = f"{drawing_id}491{new_node_cnt}0"
+                    node_id = f"{id_prefix}491{new_node_cnt}0"
                 jiedian.append({
                     "node_id": node_id,
                     "node_type": 12,
@@ -943,7 +960,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}391{new_node_cnt}0"
+            node_id = f"{id_prefix}391{new_node_cnt}0"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -969,7 +986,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}391{new_node_cnt}2"
+            node_id = f"{id_prefix}391{new_node_cnt}2"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -997,7 +1014,9 @@ def trans(file_path, drawing_id, data1, drawing_type):
             str(rod_101_id),
             str(rod_102_id),
             str(rod_103_id),
-            str(rod_104_id)
+            str(rod_104_id),
+            str(rod_front_a),
+            str(rod_front_b),
         }
 
         ganjian[:] = [
@@ -1006,7 +1025,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
         ]
 
         new_ganjian = {
-            "member_id": f"{rod_101_id}",
+            "member_id": f"{rod_front_a}",
             "node1_id": pj[drawing_id - 1][1][0],
             "node2_id": f"{jiandian_id + 20}",
             "symmetry_type": 2
@@ -1014,7 +1033,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
         ganjian.append(new_ganjian)
 
         new_ganjian = {
-            "member_id": f"{rod_103_id}",
+            "member_id": f"{rod_front_b}",
             "node1_id": pj[drawing_id - 1][0][0],
             "node2_id": f"{jiandian_id + 20}",
             "symmetry_type": 2
@@ -1024,17 +1043,20 @@ def trans(file_path, drawing_id, data1, drawing_type):
 
     else:
 
-        rod_101_id, rod_103_id = detect_main_rods_enhanced(coordinatesFront_data)
-        rod_103_id, rod_104_id = detect_main_rods_enhanced(coordinatesBottom_data)
-        rod_101_id, rod_102_id = detect_main_rods_enhanced(coordinatesOverhead_data)
-        main_rod_ids = [rod_101_id, rod_102_id, rod_103_id, rod_104_id]
+        rod_front_a, rod_front_b = detect_main_rods_enhanced(coordinatesFront_data)
+        rod_bottom_a, rod_bottom_b = detect_main_rods_enhanced(coordinatesBottom_data)
+        rod_overhead_a, rod_overhead_b = detect_main_rods_enhanced(coordinatesOverhead_data)
+
+        rod_101_id, rod_102_id = rod_overhead_a, rod_overhead_b
+        rod_103_id, rod_104_id = rod_bottom_a, rod_bottom_b
+        main_rod_ids = [rod_101_id, rod_102_id, rod_103_id, rod_104_id, rod_front_a, rod_front_b]
 
 
         ############################################################################################################
         # 1. 计算尖点的三维信息
         ############################################################################################################
 
-        newx, newy, newz = calc_jiandian_xyz(coordinatesOverhead_data, drawing_id, pj, 0)
+        newx, newy, newz = calc_jiandian_xyz(coordinatesOverhead_data, drawing_id, pj, 0, rod_101_id, rod_102_id)
         new_node = {
             "node_id": f"{jiandian_id + 20}",
             "node_type": 11,  # 根据实际情况设置节点类型
@@ -1050,10 +1072,10 @@ def trans(file_path, drawing_id, data1, drawing_type):
         ############################################################################################################
 
 
-        jiaodian_101,jiaodian_103 = get_jiaodian_on_ganjian(coordinatesFront_data,drawing_id, pj, rod_101_id,rod_103_id, yuzhi)
+        jiaodian_101,jiaodian_103 = get_jiaodian_on_ganjian(coordinatesFront_data,drawing_id, pj, rod_front_a,rod_front_b, yuzhi)
 
-        real_101 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_101, newx, pj, rod_101_id, 1, 0)
-        real_103 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_103, newx, pj, rod_103_id, 0, 1)
+        real_101 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_101, newx, pj, rod_front_a, 1, 0)
+        real_103 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_103, newx, pj, rod_front_b, 0, 1)
 
         if (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][0][0]  # 301 与塔身相交端点
@@ -1062,7 +1084,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
             left_3d_id = f"{jiandian_id + 20}"
             right_3d_id = pj[drawing_id - 1][0][0]  # 301 与塔身相交端点
 
-        real_101 = mark_endpoint_for_real_points(real_101, coordinatesFront_data, rod_101_id, left_3d_id, right_3d_id,yuzhi)
+        real_101 = mark_endpoint_for_real_points(real_101, coordinatesFront_data, rod_front_a, left_3d_id, right_3d_id,yuzhi)
 
         if (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点
@@ -1071,7 +1093,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
             left_3d_id = f"{jiandian_id + 20}"
             right_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点
 
-        real_103 = mark_endpoint_for_real_points(real_103, coordinatesFront_data, rod_103_id, left_3d_id, right_3d_id,yuzhi)
+        real_103 = mark_endpoint_for_real_points(real_103, coordinatesFront_data, rod_front_b, left_3d_id, right_3d_id,yuzhi)
 
         # ---------------生成节点-----------------------------------------------------------------------------------#
        # 为交点创建节点
@@ -1090,7 +1112,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}191{new_node_cnt}0"
+            node_id = f"{id_prefix}191{new_node_cnt}0"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -1117,7 +1139,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}193{new_node_cnt}0"
+            node_id = f"{id_prefix}193{new_node_cnt}0"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -1188,7 +1210,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}291{new_node_cnt}0"
+            node_id = f"{id_prefix}291{new_node_cnt}0"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -1215,7 +1237,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}291{new_node_cnt}2"
+            node_id = f"{id_prefix}291{new_node_cnt}2"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -1276,7 +1298,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}391{new_node_cnt}0"
+            node_id = f"{id_prefix}391{new_node_cnt}0"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -1303,7 +1325,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
                 continue
 
             new_node_cnt += 1
-            node_id = f"{drawing_id}391{new_node_cnt}2"
+            node_id = f"{id_prefix}391{new_node_cnt}2"
             node_info = {
                 "node_id": node_id,
                 "point_2d": item["point_2d"]
@@ -1376,9 +1398,9 @@ def trans(file_path, drawing_id, data1, drawing_type):
         #         new_node_cnt += 1
         #         if new_node_cnt > 9:
         #             node_seq = new_node_cnt - 9
-        #             node_id = f"{drawing_id}591{node_seq}0"
+        #             node_id = f"{id_prefix}591{node_seq}0"
         #         else:
-        #             node_id = f"{drawing_id}491{new_node_cnt}0"
+        #             node_id = f"{id_prefix}491{new_node_cnt}0"
         #         jiedian.append({
         #             "node_id": node_id,
         #             "node_type": 12,
@@ -1421,7 +1443,9 @@ def trans(file_path, drawing_id, data1, drawing_type):
             str(rod_101_id),
             str(rod_102_id),
             str(rod_103_id),
-            str(rod_104_id)
+            str(rod_104_id),
+            str(rod_front_a),
+            str(rod_front_b),
         }
 
         ganjian[:] = [
@@ -1430,7 +1454,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
         ]
 
         new_ganjian = {
-            "member_id": f"{rod_101_id}",
+            "member_id": f"{rod_front_a}",
             "node1_id": pj[drawing_id - 1][0][0],
             "node2_id": f"{jiandian_id + 20}",
             "symmetry_type": 2
@@ -1438,7 +1462,7 @@ def trans(file_path, drawing_id, data1, drawing_type):
         ganjian.append(new_ganjian)
 
         new_ganjian = {
-            "member_id": f"{rod_103_id}",
+            "member_id": f"{rod_front_b}",
             "node1_id": pj[drawing_id - 1][1][0],
             "node2_id": f"{jiandian_id + 20}",
             "symmetry_type": 2
@@ -1459,6 +1483,16 @@ def trans(file_path, drawing_id, data1, drawing_type):
             if j.get("symmetry_type") == 2:
                 j["symmetry_type"] = 4
 
+ #===== T7883 担架对称性生成 =====
+    if drawing_type == "T7883" and drawing_id == 2:
+        for g in ganjian[ganjian_start:]:
+            if g.get("symmetry_type") == 2:
+                g["symmetry_type"] = 4
+            elif g.get("symmetry_type") == 0:
+                g["symmetry_type"] = 1
+        for j in jiedian[jiedian_start:]:
+            if j.get("symmetry_type") == 2:
+                j["symmetry_type"] = 4
 
 def work(file_path, data, drawing_type):
     txt_count = count_txt_files(file_path)
