@@ -575,24 +575,24 @@ def trans(file_path, drawing_id, data1, drawing_type):
         pj = [pj[i] for i in (0, 2, 4, 6)]
     elif drawing_type in ("J3", "J4"):
         pj = [pj[i] for i in (1, 0, 3, 2, 5, 4, 7, 6)]
-    elif drawing_type in "T7883":
+    elif drawing_type in "T7833":
         pj = [pj[i] for i in (0,2)]
 
     jiandian_id = (drawing_id * 100 + 1) * 100
-    id_prefix = drawing_id + 2 if drawing_type == "T7883" else drawing_id  # T7883: 1→3, 2→4
+    id_prefix = drawing_id + 2 if drawing_type == "T7833" else drawing_id  # T7833: 1→3, 2→4
     jiandian_id = (id_prefix * 100 + 1) * 100
 
-    if drawing_type == "T7883" or (drawing_id * 100 + 1 in coordinatesBottom_data): # 处理下面的担架（非最上面的两个担架）
+    if drawing_type == "T7833" or (drawing_id * 100 + 1 in coordinatesBottom_data): # 处理下面的担架（非最上面的两个担架）
 
         rod_front_a, rod_front_b = detect_main_rods_enhanced(coordinatesFront_data)
         rod_bottom_a, rod_bottom_b = detect_main_rods_enhanced(coordinatesBottom_data)
         rod_overhead_a, rod_overhead_b = detect_main_rods_enhanced(coordinatesOverhead_data)
 
-        # T7883 正视图一类杆件方向修正：
+        # T7833 正视图一类杆件方向修正：
         # 本分支约定 rod_front_a 对应 pj 下端点(index1)、rod_front_b 对应 pj 上端点(index0)。
-        # 但 T7883 中编号小的(如105)是上杆、编号大的(如107)是下杆，与约定相反，
+        # 但 T7833 中编号小的(如105)是上杆、编号大的(如107)是下杆，与约定相反，
         # 故对调 a/b，使 section2 的二类节点Y引用与 section5 的一类杆件接续都落到正确的上下端点。
-        if drawing_type == "T7883":
+        if drawing_type == "T7833":
             rod_front_a, rod_front_b = rod_front_b, rod_front_a
 
         rod_101_id, rod_102_id = rod_bottom_a, rod_bottom_b
@@ -1483,8 +1483,8 @@ def trans(file_path, drawing_id, data1, drawing_type):
             if j.get("symmetry_type") == 2:
                 j["symmetry_type"] = 4
 
- #===== T7883 担架对称性生成 =====
-    if drawing_type == "T7883" and drawing_id == 2:
+ #===== T7833 担架对称性生成 =====
+    if drawing_type == "T7833" and drawing_id == 2:
         for g in ganjian[ganjian_start:]:
             if g.get("symmetry_type") == 2:
                 g["symmetry_type"] = 4
