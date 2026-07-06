@@ -1,5 +1,6 @@
 import xintrans
 import tower_body_reconstruction
+import t7833_pinjie
 import pandas as pd
 import os
 
@@ -126,6 +127,14 @@ def tran2dto3d(danjia_dir,tashen_dir,project_path,savepath_ui,drawing_type):
 
 
     ganjian_tashen, jiedian_tashen, pinjie_tashen = tower_body_reconstruction.build_tower_body(tashen_dir)
+
+    # T7833「上字型」拼接点识别逻辑与其他图纸不同：改由担架一类杆件左端点匹配塔身正视图横杆，
+    # 再从塔身 jiedian/ganjian 取连接点。仅此图纸替换 pinjie，其他图纸沿用塔身自带的 pinjie。
+    if drawing_type == "T7833":
+        pinjie_tashen = t7833_pinjie.build_pinjie_for_t7833(
+            danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen
+        )
+
     jiedian_danjia,ganjian_danjia= xintrans.work(danjia_dir, pinjie_tashen,drawing_type)
     jiedian=jiedian_danjia+jiedian_tashen
     jiedian = format_xyz_coordinates(jiedian)
