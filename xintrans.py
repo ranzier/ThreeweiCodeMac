@@ -245,19 +245,26 @@ def calc_jiandian_xyz(coordinates_data, drawing_id, pj,pj_view_index, rod_a_id, 
     midl = ((start_01x + start_02x) / 2, (start_01y + start_02y) / 2)  # 计算301和302两个左端点的中点
     h = dist_points(midl, midr)  # 计算左中点到右中点的距离
     p_01l = (start_01x, start_01y)
-    a1 = dist_points(p_01l, midl)  # 计算301左端点到左中点的距离
-    shiji = abs(pj[drawing_id - 1][pj_view_index][1][1])  # 计算担架3与塔身相交的下端点的三维x坐标的值，也就是实际值
-    bili = shiji / a1  # 计算实际值/像素值的比例
+    a1 = dist_points(p_01l, midl)  # 起点侧一类杆件到起点中点的距离（起点侧像素半宽）
     p_01r = (end_01x, end_01y)
-    a2 = dist_points(p_01r, midr)
+    a2 = dist_points(p_01r, midr)  # 终点侧一类杆件到终点中点的距离（终点侧像素半宽）
+    shiji = abs(pj[drawing_id - 1][pj_view_index][1][1])  # 计算担架3与塔身相交的下端点的三维x坐标的值，也就是实际值
+    # 常规图纸：基座在起点侧，用起点侧半宽 a1 做像素→真实比例、终点侧半宽 a2 算 newy。
+    # 特例（如 7837/01）：两根一类杆件在起点处收拢，a1==0 会除零；此时基座实为终点侧，
+    # 回退用 a2 做比例、a1 算 newy。只有 a1==0 时才切换，其余图纸行为完全不变。
+    if a1 != 0:
+        base_half, apex_half = a1, a2
+    else:
+        base_half, apex_half = a2, a1
+    bili = shiji / base_half  # 计算实际值/像素值的比例
     # 生成尖点
     if (pj[drawing_id - 1][pj_view_index][1][0] > 0):  # if里面生成右边担架的尖点
         newx = pj[drawing_id - 1][pj_view_index][1][0] + h * bili
-        newy = -a2 * bili
+        newy = -apex_half * bili
         newz = pj[drawing_id - 1][pj_view_index][1][2]
     else:  # else生成左边担架的尖点
         newx = pj[drawing_id - 1][pj_view_index][1][0] - h * bili
-        newy = -a2 * bili
+        newy = -apex_half * bili
         newz = pj[drawing_id - 1][pj_view_index][1][2]
     return newx, newy, newz
 
