@@ -541,7 +541,7 @@ def find_missing_members(ganjian, coordinates_data, main_rod_ids):
 jiedian = []
 ganjian = []
 
-def trans(file_path, drawing_id, data1, drawing_type):
+def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
     """
     参数:
         file_path: 包含三视图坐标数据的文件路径
@@ -584,12 +584,21 @@ def trans(file_path, drawing_id, data1, drawing_type):
         pj = [pj[i] for i in (1, 0, 3, 2, 5, 4, 7, 6)]
     elif drawing_type in "T7833":
         pj = [pj[i] for i in (0,2)]
+    elif drawing_type in "7837":
+        pj = [pj[i] for i in (0,2)]
 
-    jiandian_id = (drawing_id * 100 + 1) * 100
-    id_prefix = drawing_id + 2 if drawing_type == "T7833" else drawing_id  # T7833: 1→3, 2→4
+
+    print(pj)
+    # 担架编号偏移：担架和塔身合并的图纸（如 T7833/7837，塔身目录下存在 01.txt）担架从 3 号起，
+    # 需 +2（1→3, 2→4），保证担架和塔身的节点编号生成不会重复。是否偏移由调用方 work() 传入。
+    id_prefix = drawing_id + 2 if id_offset else drawing_id
     jiandian_id = (id_prefix * 100 + 1) * 100
 
-    if drawing_type == "T7833" or (drawing_id * 100 + 1 in coordinatesBottom_data): # 处理下面的担架（非最上面的两个担架）
+    if drawing_type == "7837":
+        jiandian_id = (id_prefix * 100 + 1) * 100 + 70
+
+    # 特例：drawing_type 为 7837 且为 01.txt（drawing_id==1）时，强制走 else 分支（按最上层担架处理）
+    if not (drawing_type == "7837" and drawing_id == 1) and (drawing_type == "T7833" or (drawing_id * 100 + 1 in coordinatesBottom_data)): # 处理下面的担架（非最上面的两个担架）
 
         rod_front_a, rod_front_b = detect_main_rods_enhanced(coordinatesFront_data)
         rod_bottom_a, rod_bottom_b = detect_main_rods_enhanced(coordinatesBottom_data)
@@ -1501,13 +1510,30 @@ def trans(file_path, drawing_id, data1, drawing_type):
             if j.get("symmetry_type") == 2:
                 j["symmetry_type"] = 4
 
-def work(file_path, data, drawing_type):
+
+
+#===== 7837 担架对称性生成 =====
+    if drawing_type == "7837":
+        for g in ganjian:
+            if g.get("symmetry_type") == 2:
+                g["symmetry_type"] = 4
+            elif g.get("symmetry_type") == 0:
+                g["symmetry_type"] = 1
+        for j in jiedian:
+            if j.get("symmetry_type") == 2:
+                j["symmetry_type"] = 4
+
+def work(file_path, data, drawing_type, tashen_dir=None):
     txt_count = count_txt_files(file_path)
+
+    # 担架和塔身合并的图纸（塔身目录下存在 01.txt，如 T7833/7837）担架编号需偏移 +2，
+    # 避免担架与塔身的节点编号生成重复。
+    id_offset = bool(tashen_dir) and os.path.exists(os.path.join(tashen_dir, "01.txt"))
 
     for i in range(1, txt_count + 1):
         #specific_file_path = f"{file_path}\\0{i}.txt"   # windows
         specific_file_path = f"{file_path}/0{i}.txt"    # mac
-        trans(specific_file_path, i, data,drawing_type)
+        trans(specific_file_path, i, data, drawing_type, id_offset)
 
     # trans(f"{file_path}\\0{4}.txt", 4, data, drawing_type)
 

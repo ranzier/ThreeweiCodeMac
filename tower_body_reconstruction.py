@@ -666,16 +666,13 @@ def merge_and_print(ganjian_A, jiedian_A, pinjie_A, ganjian_B, jiedian_B):
         seen.add(k)
         ganjian.append(m)
 
-    # 处理 member_id，移除 "_" 及其后缀，但保护 F_ 和 R_
+    # 保留输入中的实例后缀（如 113_1 / 113_2），避免不同实际杆件重名。
     for m in ganjian:
         mid = str(m.get("member_id", ""))
         if mid.startswith("F_") or mid.startswith("R_"):
             parts = mid.split("_")
             if len(parts) > 2:  # 例如 F_501_1 -> F_501
                 m["member_id"] = f"{parts[0]}_{parts[1]}"
-
-        elif "_" in mid:
-            m["member_id"] = mid.split("_")[0]
 
     pinjie = list(pinjie_A)
 
@@ -875,7 +872,7 @@ def build_tower_body(tashen_dir):
 def main():
     """命令行入口，可选传入数据目录。"""
 
-    default_data_directory = r"D:\SanWei\TaShen\test"
+    default_data_directory = r"D:\SanWei\TaShen\output\7837"
 
     if len(sys.argv) > 1:
         data_directory = sys.argv[1]

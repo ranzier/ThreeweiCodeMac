@@ -40,6 +40,17 @@ def _left_end(front, mid):
     return (p1, 0) if p1[0] <= p2[0] else (p2, 1)
 
 
+def _right_end(front, mid):
+    """取杆件 mid 的右端点（x 较大者），返回 (二维点, 端点index)。与 _left_end 对称。"""
+    p1, p2 = front[mid]  # [(x1,y1),(x2,y2)]
+    return (p1, 0) if p1[0] >= p2[0] else (p2, 1)
+
+
+def _pick_end(front, mid, side):
+    """按 side（"left"/"right"）取杆件 mid 的连接端点。"""
+    return _right_end(front, mid) if side == "right" else _left_end(front, mid)
+
+
 def _base_id(k):
     """去掉 F_/R_ 前缀与 _1/_2 拼接后缀，得到基础 member_id。例：F_119_1 -> 119。"""
     k = str(k).replace("F_", "").replace("R_", "")
@@ -96,7 +107,8 @@ def _node_xyz_from_jiedian(node_id, node_xyz):
         return None  # node_type 12 的引用式坐标（非数值）不可用
 
 
-def build_pinjie_for_t7833(danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen, tol=1.0):
+def build_pinjie_for_t7833(danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen, tol=1.0,
+                           end_side_by_index=None, swap_updown=False):
     """
     为 T7833 构建 xintrans 消费格式的 pinjie（长度 = 担架数 × 4）。
     每个元素形如 [node_id_str, [x, y, z]]。
@@ -112,6 +124,11 @@ def build_pinjie_for_t7833(danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashe
         jiedian_tashen: 塔身节点列表，用于取连接点三维坐标
         ganjian_tashen: 塔身杆件列表，用于把横杆映射回 +x 连接节点编号
         tol: 二维坐标匹配容差（原始坐标为整数，默认 1.0 兜底）
+        end_side_by_index: 按担架序号（0基）指定取左端还是右端的映射，
+            形如 {0: "right", 1: "left"}。为 None 时全部取左端（T7833 默认行为）。
+            7837 与 T7833 担架朝向相反：1号担架(01.txt)右端连塔身、2号担架(02.txt)左端连塔身。
+        swap_updown: 是否对调上/下杆。detect_main_rods_enhanced 按编号升序返回，
+            T7833 编号小=上杆(默认 up=ids[0])；7837 编号小=下杆，需置 True 对调。
     """
     # 汇总塔身所有正视图杆件的二维坐标
     tashen_fronts = []
@@ -144,14 +161,16 @@ def build_pinjie_for_t7833(danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashe
 
     danjia_txts = sorted(glob.glob(os.path.join(danjia_dir, "*.txt")))
     pinjie = []
-    for txt in danjia_txts:
+    for idx, txt in enumerate(danjia_txts):
         front = _read_front(txt)
-        ids = detect_main_rods_enhanced(front)  # 编号升序：小=上杆、大=下杆
+        ids = detect_main_rods_enhanced(front)  # 编号升序
         if len(ids) < 2:
             raise ValueError(f"T7833: 担架 {os.path.basename(txt)} 正视图未识别到两个一类杆件")
-        up_id, down_id = ids[0], ids[1]
-        up2d, _ = _left_end(front, up_id)
-        down2d, _ = _left_end(front, down_id)
+        # 默认小编号=上杆；swap_updown 时对调（7837 小编号=下杆）
+        up_id, down_id = (ids[1], ids[0]) if swap_updown else (ids[0], ids[1])
+        side = (end_side_by_index or {}).get(idx, "left")
+        up2d, _ = _pick_end(front, up_id, side)
+        down2d, _ = _pick_end(front, down_id, side)
 
         u_node, u_xyz = endpoint(up2d)
         d_node, d_xyz = endpoint(down2d)

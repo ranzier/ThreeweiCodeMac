@@ -484,7 +484,17 @@ def main(data_dir: str):
             front_raw_for_tiers = dict(front_raw)
             right_raw_for_tiers = dict(right_raw)
 
-            H_TOL = 1.0
+            # CAD horizontal members often carry a few drawing-unit Y offset.
+            # Scale the tolerance to this drawing while keeping it below the
+            # range where diagonal members could be classified as horizontal.
+            all_y_values = [
+                point[1]
+                for view in (front_raw, right_raw)
+                for segment in view.values()
+                for point in segment
+            ]
+            vertical_span = max(all_y_values) - min(all_y_values) if all_y_values else 0.0
+            H_TOL = min(25.0, max(10.0, vertical_span * 0.005))
             front_support = find_supports(front_raw)
             right_support = find_supports(right_raw)
 
@@ -621,12 +631,14 @@ def main(data_dir: str):
 
             f_fixed: CoordDict = {}
             r_fixed: CoordDict = {}
-            front_sup_final2d: CoordDict = {}
-            right_sup_final2d: CoordDict = {}
-            front_horiz_final2d: CoordDict = {}
-            right_horiz_final2d: CoordDict = {}
+            front_sup_final2d: CoordDict = dict(front_support)
+            right_sup_final2d: CoordDict = dict(right_support)
+            front_horiz_final2d: CoordDict = dict(front_horizontal)
+            right_horiz_final2d: CoordDict = dict(right_horizontal)
             front_x_final2d: CoordDict = {}
             right_x_final2d: CoordDict = {}
+            front_remaining: CoordDict = {}
+            right_remaining: CoordDict = {}
             kept: Dict[str, CoordDict] = {}
             pending3d_2dpack: Dict[str, Dict[str, CoordDict]] = {}
             if front_x_type or right_x_type:
@@ -650,11 +662,6 @@ def main(data_dir: str):
                     print(f"  - 在对X型杆件复位时遇到异常：{e}")
                     f_fixed, r_fixed = {}, {}
 
-                # ... 保持后面的字典更新逻辑不变 ...
-                front_sup_final2d = dict(front_support)
-                right_sup_final2d = dict(right_support)
-                front_horiz_final2d = dict(front_horizontal)
-                right_horiz_final2d = dict(right_horizontal)
                 front_x_final2d = dict(f_fixed)
                 right_x_final2d = dict(r_fixed)
             # if front_x_type or right_x_type:
@@ -693,48 +700,48 @@ def main(data_dir: str):
             #     front_x_final2d = dict(f_fixed)
             #     right_x_final2d = dict(r_fixed)
 
-                def _remaining(raw_dict, a, b, c):
-                    keys = set(raw_dict.keys()) - set(a.keys()) - set(b.keys()) - set(c.keys())
-                    return {k: raw_dict[k] for k in keys if k in raw_dict}
+            def _remaining(raw_dict, a, b, c):
+                keys = set(raw_dict.keys()) - set(a.keys()) - set(b.keys()) - set(c.keys())
+                return {k: raw_dict[k] for k in keys if k in raw_dict}
 
-                try:
-                    front_remaining = _remaining(front_raw, front_sup_final2d, front_horiz_final2d, front_x_final2d)
-                    right_remaining = _remaining(right_raw, right_sup_final2d, right_horiz_final2d, right_x_final2d)
+            try:
+                front_remaining = _remaining(front_raw, front_sup_final2d, front_horiz_final2d, front_x_final2d)
+                right_remaining = _remaining(right_raw, right_sup_final2d, right_horiz_final2d, right_x_final2d)
 
-                    kept = {
-                        "front_raw": front_remaining,
-                        "right_raw": right_remaining,
-                        "front_support": front_sup_final2d,
-                        "right_support": right_sup_final2d,
-                        "front_horizontal": front_horiz_final2d,
-                        "right_horizontal": right_horiz_final2d,
-                        "front_xmembers": front_x_final2d,
-                        "right_xmembers": right_x_final2d,
-                    }
+                kept = {
+                    "front_raw": front_remaining,
+                    "right_raw": right_remaining,
+                    "front_support": front_sup_final2d,
+                    "right_support": right_sup_final2d,
+                    "front_horizontal": front_horiz_final2d,
+                    "right_horizontal": right_horiz_final2d,
+                    "front_xmembers": front_x_final2d,
+                    "right_xmembers": right_x_final2d,
+                }
 
-                    pending3d_2dpack = {
-                        "front": {
-                            "support": front_sup_final2d,
-                            "horizontal": front_horiz_final2d,
-                            "xmembers": front_x_final2d,
-                        },
-                        "right": {
-                            "support": right_sup_final2d,
-                            "horizontal": right_horiz_final2d,
-                            "xmembers": right_x_final2d,
-                        },
-                    }
+                pending3d_2dpack = {
+                    "front": {
+                        "support": front_sup_final2d,
+                        "horizontal": front_horiz_final2d,
+                        "xmembers": front_x_final2d,
+                    },
+                    "right": {
+                        "support": right_sup_final2d,
+                        "horizontal": right_horiz_final2d,
+                        "xmembers": right_x_final2d,
+                    },
+                }
 
-                    print("  - 数据保留摘要：")
-                    print(f"    原始(剩余) 正面/侧面: {len(front_remaining)}/{len(right_remaining)}")
-                    print(f"    支撑 正面/侧面: {len(front_sup_final2d)}/{len(right_sup_final2d)}")
-                    print(f"    横向 正面/侧面: {len(front_horiz_final2d)}/{len(right_horiz_final2d)}")
-                    print(f"    X型  正面/侧面: {len(front_x_final2d)}/{len(right_x_final2d)}")
+                print("  - 数据保留摘要：")
+                print(f"    原始(剩余) 正面/侧面: {len(front_remaining)}/{len(right_remaining)}")
+                print(f"    支撑 正面/侧面: {len(front_sup_final2d)}/{len(right_sup_final2d)}")
+                print(f"    横向 正面/侧面: {len(front_horiz_final2d)}/{len(right_horiz_final2d)}")
+                print(f"    X型  正面/侧面: {len(front_x_final2d)}/{len(right_x_final2d)}")
 
-                except Exception as e:
-                    print(f"  - [警告] 数据保留结构构建失败：{e}")
-                    kept = {}
-                    pending3d_2dpack = {}
+            except Exception as e:
+                print(f"  - [警告] 数据保留结构构建失败：{e}")
+                kept = {}
+                pending3d_2dpack = {}
 
             # class2_front = dict(f_fixed)
             # class2_right = dict(r_fixed)

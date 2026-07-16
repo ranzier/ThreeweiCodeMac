@@ -1,5 +1,6 @@
 import math
 import io_utils as rw
+from sv_class1_transform import extract_target_members
 
 # ================= 核心工具 =================
 def dist_pt_seg(p, a, b):
@@ -27,15 +28,14 @@ def member_instance_id(raw_id):
     """Return the original member id, preserving duplicate-instance suffixes."""
     return str(raw_id).strip()
 
+
+def node_id_base(raw_id):
+    """Build the numeric node-ID prefix while preserving duplicate instances."""
+    return member_instance_id(raw_id).replace("_", "")
+
 # ================= 1. 先找一类杆件 =================
 def extract_lines01(lines_dict):
-    target = {}
-    for mid, coords in lines_dict.items():
-        s = clean_id(mid)
-        if s[-2:] in ["01", "02"]:
-            target[mid] = coords
-    return target
-
+    return extract_target_members(lines_dict)
 # ================= 辅助：算真实坐标的投影仪 =================
 def build_projector(lines01):
     lines = list(lines01.values())
@@ -96,7 +96,7 @@ def _legacy_single_view0201(line_coord):
     if not proj_result: return [], []
     projector, center_x_cad = proj_result
 
-    special_bar_id = clean_id(next(iter(lines01.keys())))
+    special_bar_id = node_id_base(next(iter(lines01.keys())))
 
     # 用于防冲突的节点 ID 分配器
     used_nids = set()
@@ -118,7 +118,7 @@ def _legacy_single_view0201(line_coord):
         member_k = member_instance_id(k)
         node_ids = []
         for i, pt in enumerate(seg):
-            nid = get_safe_nid(clean_k)
+            nid = get_safe_nid(node_id_base(k))
             x3d, y3d, z3d = projector(pt[0], pt[1])
             jiedian.append({
                 "node_id": str(nid), "node_type": 11, "symmetry_type": 4,
@@ -158,7 +158,7 @@ def _legacy_single_view0201(line_coord):
             node_ids = []
             for i, pt in enumerate(seg):
                 # 必定生成 110910 和 110920！
-                nid = get_safe_nid(clean_k)
+                nid = get_safe_nid(node_id_base(k))
                 _, _, z3d = projector(pt[0], pt[1])
 
                 if pt[0] < center_x_cad:
@@ -220,7 +220,7 @@ def _legacy_single_view0201(line_coord):
         print(f"\n=== [处理三类杆件] {clean_k} ===")
 
         for i, pt in enumerate(seg):
-            nid = get_safe_nid(clean_k)
+            nid = get_safe_nid(node_id_base(k))
             x3d, _, z3d = projector(pt[0], pt[1])
 
             h_t1 = h1_t1 if i == 0 else h2_t1
@@ -230,7 +230,7 @@ def _legacy_single_view0201(line_coord):
             # 情况 A：吸附在【一类主腿】
             # --------------------
             if h_t1:
-                real_host_id = clean_id(h_t1)  # 关键修复：用真实吸附的主腿ID
+                real_host_id = node_id_base(h_t1)  # 关键修复：用真实吸附的主腿ID
                 ref_x = f"{real_host_id}10"
                 ref_y = f"{real_host_id}20"
 
@@ -248,7 +248,7 @@ def _legacy_single_view0201(line_coord):
             # 情况 B：吸附在【二类杆件】
             # --------------------
             elif h_t2:
-                real_host_id = clean_id(h_t2)
+                real_host_id = node_id_base(h_t2)
                 if real_host_id in tier2_nodes_map:
                     rn1, rn2 = tier2_nodes_map[real_host_id]
                     jiedian.append({
@@ -523,7 +523,7 @@ def single_view0201(
         return ([], [], []) if return_debug_nodes else ([], [])
     projector, center_x_cad = proj_result
 
-    special_bar_id = clean_id(next(iter(lines01.keys())))
+    special_bar_id = node_id_base(next(iter(lines01.keys())))
     used_nids = set()
     node_records = {}
     member_specs = {}
@@ -610,6 +610,56 @@ def single_view0201(
             str(source2): str(side_node2),
         }
 
+    def _resolve_node_xyz(node_id, resolving=None):
+        """Resolve a local type-11/type-12 record to a real 3D point."""
+        node_id = str(node_id)
+        resolving = set() if resolving is None else resolving
+        if node_id in resolving:
+            return None
+        record = node_records.get(node_id)
+        if record is None:
+            return None
+
+        values = record.get("_xyz", (record["X"], record["Y"], record["Z"]))
+        reference_indexes = [index for index, value in enumerate(values) if isinstance(value, str)]
+        if not reference_indexes:
+            return tuple(float(value) for value in values)
+        if len(reference_indexes) != 2:
+            return None
+
+        real_index = next(index for index in range(3) if index not in reference_indexes)
+        point_a = _resolve_node_xyz(values[reference_indexes[0]], resolving | {node_id})
+        point_b = _resolve_node_xyz(values[reference_indexes[1]], resolving | {node_id})
+        if point_a is None or point_b is None:
+            return None
+
+        span = point_b[real_index] - point_a[real_index]
+        if abs(span) < 1e-9:
+            return None
+        ratio = (float(values[real_index]) - point_a[real_index]) / span
+        return tuple(
+            float(values[real_index]) if index == real_index
+            else point_a[index] + ratio * (point_b[index] - point_a[index])
+            for index in range(3)
+        )
+
+    def _add_rotated_side_member(member_id, node_base, node1_id, node2_id, variant):
+        """Create one true side-face member by rotating both front endpoints."""
+        point1 = _resolve_node_xyz(node1_id)
+        point2 = _resolve_node_xyz(node2_id)
+        if point1 is None or point2 is None:
+            print(f"[跳过侧面] 杆件 {member_id} 的正面端点无法解析")
+            return None
+
+        side_node1 = get_safe_nid(node_base)
+        side_node2 = get_safe_nid(node_base)
+        x1, y1, z1 = point1
+        x2, y2, z2 = point2
+        add_node(side_node1, 11, 4, y1, -x1, z1, None, export=True)
+        add_node(side_node2, 11, 4, y2, -x2, z2, None, export=True)
+        add_member(member_id, 4, side_node1, side_node2, variant=variant)
+        return str(side_node1), str(side_node2)
+
     tier2_nodes_map = {}
     tier2_side_nodes_map = {}
 
@@ -618,7 +668,7 @@ def single_view0201(
         member_k = member_instance_id(k)
         node_ids = []
         for pt in seg:
-            nid = get_safe_nid(clean_k)
+            nid = get_safe_nid(node_id_base(k))
             x3d, y3d, z3d = projector(pt[0], pt[1])
             # Keep the two tier1 main legs on the same reference side plane
             # while preserving their left/right X symmetry.
@@ -655,13 +705,13 @@ def single_view0201(
             node_ids = []
             endpoint_hosts = {}
             for idx, pt in enumerate(seg):
-                nid = get_safe_nid(clean_k)
+                nid = get_safe_nid(node_id_base(k))
                 _, _, z3d = projector(pt[0], pt[1])
                 host_key = member_instance_id(h1 if idx == 0 else h2)
                 if host_key in tier1_nodes_map:
                     ref_x, ref_y = tier1_nodes_map[host_key]
                 else:
-                    real_host_id = clean_id(host_key)
+                    real_host_id = node_id_base(host_key)
                     ref_x, ref_y = f"{real_host_id}10", f"{real_host_id}20"
                 add_node(nid, 12, 4, ref_x, ref_y, z3d, pt, export=True)
                 node_ids.append(str(nid))
@@ -681,27 +731,28 @@ def single_view0201(
             else:
                 add_member(member_k, 4, node_ids[0], node_ids[1], variant="tier2-main")
                 if not front_only:
-                    side_node1, virtual_diag, side_by_source = _side_face_projection(node_ids[0], node_ids[1])
-                    source2 = next(
-                        (source_id for source_id, side_id in side_by_source.items() if side_id == virtual_diag),
-                        node_ids[1],
+                    side_nodes = _add_rotated_side_member(
+                        member_k, node_id_base(k), node_ids[0], node_ids[1], "tier2-side"
                     )
-                    add_member(member_k, 4, side_node1, virtual_diag, variant="tier2-side", source2=source2)
-                    side_nodes = (side_node1, virtual_diag)
-                    tier2_side_nodes_map[member_k] = {
-                        "endpoints": side_nodes,
-                        "by_source": side_by_source,
-                        "endpoint_hosts": endpoint_hosts,
-                    }
-    def _tier3_side_endpoint(clean_k, endpoint_info, paired_info):
+                    if side_nodes:
+                        tier2_side_nodes_map[member_k] = {
+                            "endpoints": side_nodes,
+                            "by_source": {},
+                            "endpoint_hosts": endpoint_hosts,
+                        }
+    def _tier3_side_endpoint(node_base, endpoint_info, paired_info):
         node_id = str(endpoint_info["node_id"])
         host_kind = endpoint_info.get("host_kind")
         host_key = endpoint_info.get("host_key")
 
-        if host_kind == "tier2":
-            side_info = tier2_side_nodes_map.get(str(host_key))
+        if host_kind in {"tier2", "tier3"}:
+            side_maps = {
+                "tier2": tier2_side_nodes_map,
+                "tier3": tier3_side_nodes_map,
+            }
+            side_info = side_maps[host_kind].get(str(host_key))
             if side_info:
-                side_node_id = get_safe_nid(clean_k)
+                side_node_id = get_safe_nid(node_base)
                 side_ref1, side_ref2 = side_info["endpoints"]
                 add_node(
                     side_node_id,
@@ -718,8 +769,13 @@ def single_view0201(
 
         if host_kind == "tier1":
             suffix = "2"
-            if paired_info and paired_info.get("host_kind") == "tier2":
-                side_info = tier2_side_nodes_map.get(str(paired_info.get("host_key")))
+            if paired_info and paired_info.get("host_kind") in {"tier2", "tier3"}:
+                paired_kind = paired_info["host_kind"]
+                paired_maps = {
+                    "tier2": tier2_side_nodes_map,
+                    "tier3": tier3_side_nodes_map,
+                }
+                side_info = paired_maps[paired_kind].get(str(paired_info.get("host_key")))
                 if side_info:
                     for source_id, source_host in side_info.get("endpoint_hosts", {}).items():
                         if source_host == host_key:
@@ -731,89 +787,104 @@ def single_view0201(
 
         return _replace_node_suffix(node_id, "2"), node_id
 
-    def _tier3_tier2_node_values(host_key, pt, x3d, z3d):
-        if host_key in tier2_nodes_map:
-            ref1, ref2 = tier2_nodes_map[host_key]
+    def _tier3_host_node_values(host_key, host_nodes_map, host_members, x3d, z3d):
+        """Choose a resolvable type-12 representation for the host direction."""
+        if host_key in host_nodes_map:
+            ref1, ref2 = host_nodes_map[host_key]
         else:
-            real_host_id = clean_id(host_key)
+            real_host_id = node_id_base(host_key)
             ref1, ref2 = f"{real_host_id}10", f"{real_host_id}20"
 
-        host_seg = tier2_members.get(host_key)
-        is_level_host = bool(host_seg and abs(host_seg[0][1] - host_seg[1][1]) < 25.0)
-        if is_level_host:
+        host_seg = host_members.get(host_key)
+        if host_seg and abs(host_seg[0][1] - host_seg[1][1]) < 25.0:
+            # A horizontal host has no Z span.  Keep X real so the renderer
+            # can interpolate from the two referenced endpoints.
             return x3d, ref1, ref2
         return ref1, ref2, z3d
 
-    for k, seg in list(unclassified.items()):
-        pt1, pt2 = seg[0], seg[1]
-        h1_t1 = find_host(pt1, lines01)
-        h2_t1 = find_host(pt2, lines01)
-        h1_t2 = find_host(pt1, tier2_members) if not h1_t1 else None
-        h2_t2 = find_host(pt2, tier2_members) if not h2_t1 else None
+    # Tier-3 braces may depend on another tier-3 brace.  Keep propagating
+    # recognized hosts until no remaining member can be resolved.
+    tier3_members = {}
+    tier3_nodes_map = {}
+    tier3_side_nodes_map = {}
+    pending = dict(unclassified)
 
-        if h1_t1 and h2_t1:
-            continue
+    def resolve_host(pt):
+        host_key = find_host(pt, lines01)
+        if host_key:
+            return "tier1", member_instance_id(host_key)
+        host_key = find_host(pt, tier2_members)
+        if host_key:
+            return "tier2", member_instance_id(host_key)
+        host_key = find_host(pt, tier3_members)
+        if host_key:
+            return "tier3", member_instance_id(host_key)
+        return None, None
 
-        if not (h1_t1 or h1_t2) or not (h2_t1 or h2_t2):
-            print(f"[跳过] 杆件 {k} 无有效宿主")
-            continue
+    while pending:
+        resolved_count = 0
+        for k, seg in list(pending.items()):
+            endpoint_hosts = [resolve_host(pt) for pt in seg]
+            if not all(host_key for _, host_key in endpoint_hosts):
+                continue
+            if all(host_kind == "tier1" for host_kind, _ in endpoint_hosts):
+                continue
 
-        clean_k = clean_id(k)
-        member_k = member_instance_id(k)
-        node_ids = []
-        endpoint_infos = []
-        print(f"\n=== [处理三类杆件] {clean_k} ===")
+            clean_k = clean_id(k)
+            member_k = member_instance_id(k)
+            node_ids = []
+            endpoint_infos = []
+            print(f"\n=== [处理三类杆件] {clean_k} ===")
 
-        for idx, pt in enumerate(seg):
-            nid = get_safe_nid(clean_k)
-            x3d, _, z3d = projector(pt[0], pt[1])
-            h_t1 = h1_t1 if idx == 0 else h2_t1
-            h_t2 = h1_t2 if idx == 0 else h2_t2
-
-            if h_t1:
-                host_key = member_instance_id(h_t1)
-                if host_key in tier1_nodes_map:
-                    ref_x, ref_y = tier1_nodes_map[host_key]
+            for pt, (host_kind, host_key) in zip(seg, endpoint_hosts):
+                nid = get_safe_nid(node_id_base(k))
+                _, _, z3d = projector(pt[0], pt[1])
+                if host_kind == "tier1":
+                    host_nodes_map = tier1_nodes_map
+                    host_members = lines01
+                elif host_kind == "tier2":
+                    host_nodes_map = tier2_nodes_map
+                    host_members = tier2_members
                 else:
-                    real_host_id = clean_id(h_t1)
-                    ref_x = f"{real_host_id}10"
-                    ref_y = f"{real_host_id}20"
-                add_node(nid, 12, 4, ref_x, ref_y, z3d, pt, export=True)
-                endpoint_infos.append({
-                    "node_id": str(nid),
-                    "host_kind": "tier1",
-                    "host_key": host_key,
-                    "z": z3d,
-                    "front_xy": pt,
-                })
-            elif h_t2:
-                host_key = member_instance_id(h_t2)
-                node_x, node_y, node_z = _tier3_tier2_node_values(host_key, pt, x3d, z3d)
+                    host_nodes_map = tier3_nodes_map
+                    host_members = tier3_members
+                x3d, _, z3d = projector(pt[0], pt[1])
+                node_x, node_y, node_z = _tier3_host_node_values(
+                    host_key, host_nodes_map, host_members, x3d, z3d
+                )
                 add_node(nid, 12, 4, node_x, node_y, node_z, pt, export=True)
                 endpoint_infos.append({
                     "node_id": str(nid),
-                    "host_kind": "tier2",
+                    "host_kind": host_kind,
                     "host_key": host_key,
                     "z": z3d,
                     "front_xy": pt,
                 })
+                node_ids.append(str(nid))
 
-            node_ids.append(str(nid))
-
-        if len(node_ids) == 2:
+            tier3_members[k] = seg
+            tier3_nodes_map[member_k] = (node_ids[0], node_ids[1])
             add_member(member_k, 4, node_ids[0], node_ids[1], variant="tier3-main")
-            if not front_only and len(endpoint_infos) == 2:
-                side_node1, source1 = _tier3_side_endpoint(clean_k, endpoint_infos[0], endpoint_infos[1])
-                side_node2, source2 = _tier3_side_endpoint(clean_k, endpoint_infos[1], endpoint_infos[0])
-                add_member(
-                    member_k,
-                    4,
-                    side_node1,
-                    side_node2,
-                    variant="tier3-side",
-                    source1=source1,
-                    source2=source2,
+            if not front_only:
+                side_nodes = _add_rotated_side_member(
+                    member_k, node_id_base(k), node_ids[0], node_ids[1], "tier3-side"
                 )
+                if side_nodes:
+                    tier3_side_nodes_map[member_k] = {
+                        "endpoints": side_nodes,
+                        "by_source": {},
+                        "endpoint_hosts": {
+                            endpoint_infos[0]["node_id"]: endpoint_infos[0]["host_key"],
+                            endpoint_infos[1]["node_id"]: endpoint_infos[1]["host_key"],
+                        },
+                    }
+            del pending[k]
+            resolved_count += 1
+
+        if not resolved_count:
+            for k in pending:
+                print(f"[跳过] 杆件 {k} 无有效宿主")
+            break
 
     if debug_member_links:
         _debug_dump_member_links(node_records)
