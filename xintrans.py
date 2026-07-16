@@ -587,6 +587,9 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
     elif drawing_type in "7837":
         pj = [pj[i] for i in (0,2)]
 
+    if drawing_type == "7837" and drawing_id == 2 and len(pj) > 1 and len(pj[1]) >= 2:
+        pj[1][0], pj[1][1] = pj[1][1], pj[1][0]
+
 
     print(pj)
     # 担架编号偏移：担架和塔身合并的图纸（如 T7833/7837，塔身目录下存在 01.txt）担架从 3 号起，
@@ -598,7 +601,10 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         jiandian_id = (id_prefix * 100 + 1) * 100 + 70
 
     # 特例：drawing_type 为 7837 且为 01.txt（drawing_id==1）时，强制走 else 分支（按最上层担架处理）
-    if not (drawing_type == "7837" and drawing_id == 1) and (drawing_type == "T7833" or (drawing_id * 100 + 1 in coordinatesBottom_data)): # 处理下面的担架（非最上面的两个担架）
+    if (drawing_type == "7837" and drawing_id == 2) or (
+        not (drawing_type == "7837" and drawing_id == 1)
+        and (drawing_type == "T7833" or (drawing_id * 100 + 1 in coordinatesBottom_data))
+    ): # 处理下面的担架（非最上面的两个担架）
 
         rod_front_a, rod_front_b = detect_main_rods_enhanced(coordinatesFront_data)
         rod_bottom_a, rod_bottom_b = detect_main_rods_enhanced(coordinatesBottom_data)
@@ -608,7 +614,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         # 本分支约定 rod_front_a 对应 pj 下端点(index1)、rod_front_b 对应 pj 上端点(index0)。
         # 但 T7833 中编号小的(如105)是上杆、编号大的(如107)是下杆，与约定相反，
         # 故对调 a/b，使 section2 的二类节点Y引用与 section5 的一类杆件接续都落到正确的上下端点。
-        if drawing_type == "T7833":
+        if drawing_type == "T7833" or (drawing_type == "7837" and drawing_id == 2):
             rod_front_a, rod_front_b = rod_front_b, rod_front_a
 
         rod_101_id, rod_102_id = rod_bottom_a, rod_bottom_b
@@ -1063,6 +1069,9 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         rod_bottom_a, rod_bottom_b = detect_main_rods_enhanced(coordinatesBottom_data)
         rod_overhead_a, rod_overhead_b = detect_main_rods_enhanced(coordinatesOverhead_data)
 
+        if drawing_type == "7837" and drawing_id == 1:
+            rod_front_a, rod_front_b = rod_front_b, rod_front_a
+
         rod_101_id, rod_102_id = rod_overhead_a, rod_overhead_b
         rod_103_id, rod_104_id = rod_bottom_a, rod_bottom_b
         main_rod_ids = [rod_101_id, rod_102_id, rod_103_id, rod_104_id, rod_front_a, rod_front_b]
@@ -1093,7 +1102,10 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         real_101 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_101, newx, pj, rod_front_a, 1, 0)
         real_103 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_103, newx, pj, rod_front_b, 0, 1)
 
-        if (pj[drawing_id - 1][1][1][0] > 0):
+        if drawing_type == "7837" and drawing_id == 1:
+            left_3d_id = f"{jiandian_id + 20}"  # 7837/01 正视图尖点在左端收拢点
+            right_3d_id = pj[drawing_id - 1][0][0]  # 与塔身相交端点
+        elif (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][0][0]  # 301 与塔身相交端点
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1102,7 +1114,10 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
 
         real_101 = mark_endpoint_for_real_points(real_101, coordinatesFront_data, rod_front_a, left_3d_id, right_3d_id,yuzhi)
 
-        if (pj[drawing_id - 1][1][1][0] > 0):
+        if drawing_type == "7837" and drawing_id == 1:
+            left_3d_id = f"{jiandian_id + 20}"  # 7837/01 正视图尖点在左端收拢点
+            right_3d_id = pj[drawing_id - 1][1][0]  # 与塔身相交端点
+        elif (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1193,7 +1208,10 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         real_102 = get_real_x_of_jiaodian(coordinatesOverhead_data, drawing_id, jiaodian_102, newx, pj, rod_102_id, 1,0)
 
 
-        if (pj[drawing_id - 1][1][1][0] > 0):
+        if drawing_type == "7837" and drawing_id == 1:
+            left_3d_id = f"{jiandian_id + 20}"  # 7837/01 顶视图尖点在左端收拢点
+            right_3d_id = pj[drawing_id - 1][0][0]  # 与塔身相交端点
+        elif (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][0][0]  # 301 与塔身相交端点
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1202,7 +1220,10 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
 
         real_101 = mark_endpoint_for_real_points(real_101, coordinatesOverhead_data, rod_101_id, left_3d_id, right_3d_id,yuzhi)
 
-        if (pj[drawing_id - 1][1][1][0] > 0):
+        if drawing_type == "7837" and drawing_id == 1:
+            left_3d_id = f"{jiandian_id + 22}"  # 7837/01 顶视图尖点在左端收拢点
+            right_3d_id = str(int(pj[drawing_id - 1][0][0]) + 2)
+        elif (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = str(int(pj[drawing_id - 1][0][0]) + 2)
             right_3d_id = f"{jiandian_id + 22}"  # 尖点
         else:
@@ -1282,7 +1303,10 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         real_103 = get_real_x_of_jiaodian(coordinatesBottom_data, drawing_id, jiaodian_103, newx, pj, rod_103_id,1,0)
         real_104 = get_real_x_of_jiaodian(coordinatesBottom_data, drawing_id, jiaodian_104, newx, pj, rod_104_id, 1,0)
 
-        if (pj[drawing_id - 1][1][1][0] > 0):
+        if drawing_type == "7837" and drawing_id == 1:
+            left_3d_id = f"{jiandian_id + 20}"  # 7837/01 底视图尖点在左端收拢点
+            right_3d_id = pj[drawing_id - 1][1][0]  # 与塔身相交端点
+        elif (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1290,7 +1314,10 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
             right_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点
         real_103 = mark_endpoint_for_real_points(real_103,coordinatesBottom_data,rod_103_id,left_3d_id,right_3d_id,yuzhi)
 
-        if (pj[drawing_id - 1][1][1][0] > 0):
+        if drawing_type == "7837" and drawing_id == 1:
+            left_3d_id = f"{jiandian_id + 22}"  # 7837/01 底视图尖点在左端收拢点
+            right_3d_id = str(int(pj[drawing_id - 1][1][0]) + 2)
+        elif (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = str(int(pj[drawing_id - 1][1][0]) + 2)
             right_3d_id = f"{jiandian_id + 22}"
         else:

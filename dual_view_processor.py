@@ -808,7 +808,7 @@ def main(data_dir: str):
         if not AUTO_SPLICE_SELECTION:
             print("\n" + "=" * 50)
             print("检测到多个模型，请选择作为拼接基准的模型：")
-            model_keys = list(all_models_data.keys())
+            model_keys = sorted(all_models_data.keys(), key=_drawing_sort_key)
             for idx, key in enumerate(model_keys):
                 print(f"  [{idx}] {key}")
             # 交互式读取用户输入：用于明确哪一段塔身作为整个拼接链的起点

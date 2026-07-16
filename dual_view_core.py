@@ -6,11 +6,23 @@
 """
 from typing import Dict, List, Tuple, Optional, TypeAlias, Any, Set
 import math
+import re
 
 # ====== 闂傚倸鍊风欢锟犲磻閸涱収娼╅柕濞炬櫅閺?3D 濠电姷顣藉Σ鍛村垂椤忓牆鐒垫い鎺嗗亾缁剧虎鍙冮崺鈧い鎺戝閺佽京绱掔€ｎ亶妯€妞ゃ垺锕㈤幃娆撴濞戣鲸鍠橀梻浣筋嚙缁绘帡宕戦悢鐓庣；闁绘劕鎼悞鍨亜閹搭厼澧柛濠傤煼閹兘濮€閳藉棙顔旈梺缁樺姌鐏忔瑩鏁嶅鍡欘洸婵炴垯鍨洪悡銉︾箾閹寸儐鐒藉褎姊荤槐鎺旂磼濡搫鎽靛Δ鐘靛仦閸旀牠骞忛崨瀛樺仭闁哄顑欏Σ濠氭⒒娴ｅ憡鍟為柣鐔讳含瀵板﹪鎳栭埡鍐暥婵犮垼鍩栭崝鏇㈡儗濡や焦鍙忔俊銈傚亾闁绘绻掔划?======
 Point3D: TypeAlias = Tuple[float, float, float]
 Seg3D: TypeAlias = List[Point3D]
 Model3DData: TypeAlias = Dict[str, Seg3D]
+
+
+def _model_sort_key(value: Any) -> Tuple[Tuple[Tuple[int, Any], ...], str]:
+    """Natural drawing order: 09 before 10, J1-9 before J1-10."""
+    text = str(value)
+    parts = re.split(r"(\d+)", text)
+    key = tuple(
+        (0, int(part)) if part.isdigit() else (1, part.lower())
+        for part in parts
+    )
+    return key, text.lower()
 
 
 def base_id(rid) -> str:
@@ -1489,7 +1501,9 @@ def splice_models(
     """
     Splice all tower-body models into one shared 3D coordinate space.
     """
-    model_names = sorted(all_models_data.keys())
+    # Keep this order consistent with dual_view_processor's input order.  A
+    # plain string sort would place "10" before "9" and reverse their stack.
+    model_names = sorted(all_models_data.keys(), key=_model_sort_key)
     print("\n" + "=" * 50)
     print("Model splicing")
     print("=" * 50)
