@@ -667,7 +667,12 @@ def single_view0201(
         clean_k = clean_id(k)
         member_k = member_instance_id(k)
         node_ids = []
-        for pt in seg:
+        # Keep the main-leg endpoint IDs consistent with single_view01:
+        # ..10 is the lower endpoint and ..20 is the upper endpoint.  CAD
+        # segments are not consistently ordered, while later seam correction
+        # uses these suffixes as physical bottom/top identifiers.
+        ordered_points = sorted(seg, key=lambda pt: projector(pt[0], pt[1])[2])
+        for pt in ordered_points:
             nid = get_safe_nid(node_id_base(k))
             x3d, y3d, z3d = projector(pt[0], pt[1])
             # Keep the two tier1 main legs on the same reference side plane

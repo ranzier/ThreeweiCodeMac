@@ -16,6 +16,7 @@ from dual_view_core import (
     generate_outputs, scale_by_member,
     build_vertical_reuse_aliases, apply_id_aliases,
     drop_vertical_members,  # 原有
+    remap_vertical_coordinates,
 )
 
 # ====== 拼接与定标开关 ======
@@ -516,10 +517,36 @@ def main(data_dir: str):
             front_support, front_horizontal = enforce_symmetry(front_support, front_horizontal)
             right_support, right_horizontal = enforce_symmetry(right_support, right_horizontal)
 
+            def _support_height_span(supports):
+                values = [point[1] for segment in supports.values() for point in segment]
+                if len(values) < 2:
+                    return None
+                low, high = min(values), max(values)
+                return (low, high) if high - low >= 1e-9 else None
+
+            # Keep each view's CAD height basis for horizontal pairing.  The
+            # following slope-matching step intentionally changes both support
+            # extents, so deriving relative levels afterwards is incorrect.
+            front_height_span = _support_height_span(front_support)
+            right_height_span = _support_height_span(right_support)
+
             front_support, right_support = match_support_slopes(front_support, right_support)
 
             f_models = build_support_models(front_support)
             r_models = build_support_models(right_support)
+
+            def _model_height_span(models):
+                values = [value for model in models for value in (model.ymin, model.ymax)]
+                if len(values) < 2:
+                    return None
+                low, high = min(values), max(values)
+                return (low, high) if high - low >= 1e-9 else None
+
+            model_spans = [span for span in (_model_height_span(f_models), _model_height_span(r_models)) if span]
+            canonical_height_span = (
+                min(span[0] for span in model_spans),
+                max(span[1] for span in model_spans),
+            ) if model_spans else None
 
             plan = plan_top_span(f_models, r_models, front_horizontal, right_horizontal)
             if plan:
@@ -536,11 +563,28 @@ def main(data_dir: str):
             f_models = build_support_models(front_support)
             r_models = build_support_models(right_support)
 
+            # plan_top_span() may extend the support endpoints, so refresh
+            # the common target range from the geometry that will actually be
+            # used for reconstruction.
+            model_spans = [span for span in (_model_height_span(f_models), _model_height_span(r_models)) if span]
+            canonical_height_span = (
+                min(span[0] for span in model_spans),
+                max(span[1] for span in model_spans),
+            ) if model_spans else None
+
             skip_f = {plan["front_top_key"]} if plan and plan.get("front_top_key") else set()
             skip_r = {plan["right_top_key"]} if plan and plan.get("right_top_key") else set()
 
             front_horizontal, right_horizontal = correct_horizontals(
-                f_models, r_models, front_horizontal, right_horizontal, skip_f, skip_r
+                f_models,
+                r_models,
+                front_horizontal,
+                right_horizontal,
+                skip_f,
+                skip_r,
+                front_height_span=front_height_span,
+                right_height_span=right_height_span,
+                target_height_span=canonical_height_span,
             )
 
             front_support = align_to_top(front_support, front_horizontal)
@@ -748,8 +792,16 @@ def main(data_dir: str):
                         # === 核心修复：拯救被丢弃的 K型/V型 辅助斜材 ===
             # 将 f_fixed (标准的交叉X型) 与 front_remaining (未交叉/半宽的辅材) 合并
             # 保证图纸上画了的所有斜材，一根不少地进入 3D 重建池
-            class2_front = {**f_fixed, **front_remaining}
-            class2_right = {**r_fixed, **right_remaining}
+            # All secondary members must use the same vertical coordinate
+            # basis as the corrected main legs/horizontals.  Without this,
+            # diagonal endpoints retain their view-local CAD heights and the
+            # front/right representations drift onto different Z layers.
+            class2_front = remap_vertical_coordinates(
+                {**f_fixed, **front_remaining}, front_height_span, canonical_height_span
+            )
+            class2_right = remap_vertical_coordinates(
+                {**r_fixed, **right_remaining}, right_height_span, canonical_height_span
+            )
 
             front_total = {**front_support, **front_horizontal, **class2_front}
             right_total = {**right_support, **right_horizontal, **class2_right}

@@ -321,6 +321,35 @@ def clean_view(view: CoordDict, view_name: str, round_ndigits: Optional[int] = N
         out[str(k)] = [p1, p2]
     return out
 
+
+def remap_vertical_coordinates(
+    view: CoordDict,
+    source_height_span: Optional[Tuple[float, float]],
+    target_height_span: Optional[Tuple[float, float]],
+) -> CoordDict:
+    """Map a view's CAD Y values onto the common reconstruction height span."""
+    if source_height_span is None or target_height_span is None:
+        return dict(view)
+
+    source_low, source_high = source_height_span
+    target_low, target_high = target_height_span
+    source_height = float(source_high) - float(source_low)
+    if abs(source_height) < 1e-9:
+        return dict(view)
+
+    out: CoordDict = {}
+    for member_id, segment in view.items():
+        points = []
+        for x_value, y_value in segment:
+            level = (float(y_value) - float(source_low)) / source_height
+            # Small CAD drafting offsets may put an endpoint slightly beyond a
+            # support end.  Keep it on the physical tower interval.
+            level = min(1.0, max(0.0, level))
+            target_y = float(target_low) + level * (float(target_high) - float(target_low))
+            points.append((float(x_value), target_y))
+        out[str(member_id)] = points
+    return out
+
 # ----------------
 # 闂傚倷绀侀幉锛勬暜閹烘嚦娑樷槈濮橆厼浠忓銈嗗姧闂勫嫰寮查浣瑰弿婵妫楅獮妤呮煛閸℃鐭掗柡宀€鍠栭幃娆擃敆閳ь剟鎮橀敐鍥╃＜婵°倐鍋撻柤娲诲灥閻忔帒顪冮妶鍛閻庢凹鍙冨畷?
 # ----------------
@@ -423,7 +452,10 @@ def correct_paired_horizontals(front_horizontal: CoordDict,
                                right_horizontal: CoordDict,
                                front_support_models: List[Line],
                                right_support_models: List[Line],
-                               round_to_int: bool = False):
+                               round_to_int: bool = False,
+                               front_height_span: Optional[Tuple[float, float]] = None,
+                               right_height_span: Optional[Tuple[float, float]] = None,
+                               target_height_span: Optional[Tuple[float, float]] = None):
     """
     闂傚倷鑳堕…鍫㈡崲閹存繐鑰块柛锔诲幘缁€濠囨煙鐎涙ɑ鍎曢柣鏃傗拡閺佸倿鏌涘☉鍗炴灓缂佸濞婂娲偡閹殿喗鎲奸梺鍛婃⒐濞茬喖銆佸棰濇晪闁逞屽墮閻ｇ兘濡烽妷褎娈曢梺鍛婃处閸樺ジ鎷忕€ｎ喗鈷戦柟绋挎捣閳洟鏌よぐ鎺旂暫妞ゃ垺宀搁、娆戠驳鐎ｎ兘鍋撻弻銉︾厵闂侇叏绠戞晶顖炴煕婵犲洦娑ч柍钘夘樀楠炴﹢宕￠悙鈺佷壕婵°倕鎷嬮弫鍌涖亜閹哄棗浜惧銈嗘穿缂嶄礁鐣烽锕€绀嬫い鎰╁€曢獮鈧梻鍌欐祰琚欓柛瀣崌閺岋箑螣娓氼垱效闂傚鍓﹂崜鐔煎蓟閿熺姴鐒垫い鎺戝閺佸秵绻涢幋鐐垫噧妞ゅ繗顫夌换?
     """
@@ -450,8 +482,12 @@ def correct_paired_horizontals(front_horizontal: CoordDict,
         return (float(y) - low) / (high - low)
 
     matched_pairs = []
-    front_span = _vertical_span(front_support_models)
-    right_span = _vertical_span(right_support_models)
+    # Support slopes are unified before this function runs.  Their resulting
+    # common bounds cannot be used to compare CAD levels from two views with
+    # different original vertical scales, otherwise corresponding members such
+    # as 208/209 are rejected as being on different layers.
+    front_span = front_height_span or _vertical_span(front_support_models)
+    right_span = right_height_span or _vertical_span(right_support_models)
     if front_span and right_span:
         candidates = []
         for kf, yf in fl:
@@ -473,7 +509,13 @@ def correct_paired_horizontals(front_horizontal: CoordDict,
             matched_pairs.append((kf, yf, kr, yr))
 
     for kf, yf, kr, yr in matched_pairs:
-        y = (yf + yr)/2.0
+        if target_height_span and front_span and right_span:
+            front_level = _relative_height(yf, front_span)
+            right_level = _relative_height(yr, right_span)
+            level = min(1.0, max(0.0, (front_level + right_level) / 2.0))
+            y = target_height_span[0] + level * (target_height_span[1] - target_height_span[0])
+        else:
+            y = (yf + yr)/2.0
 
         Lf, Rf = _extreme_x_at(front_support_models, y)
         Lr, Rr = _extreme_x_at(right_support_models, y)
@@ -777,7 +819,10 @@ def correct_horizontals(
     front_horizontal: CoordDict, right_horizontal: CoordDict,
     skip_front_keys: Optional[set] = None,
     skip_right_keys: Optional[set] = None,
-    round_to_int: bool = False
+    round_to_int: bool = False,
+    front_height_span: Optional[Tuple[float, float]] = None,
+    right_height_span: Optional[Tuple[float, float]] = None,
+    target_height_span: Optional[Tuple[float, float]] = None,
 ) -> Tuple[CoordDict, CoordDict]:
     """
     婵犵數鍋涢顓熸叏閹绢喖绠犻幖鎼厛閺佸銇勯弴妤€浜鹃梺鎼炲妽閸庢娊鈥﹂妸鈺佺闁靛ě灞芥杸闂傚倷鑳堕幊鎾诲箹椤愇诲洭鎮界粙璇俱儱鈹戦悩韫抗闁绘梻鈷堥弫鍌炴煕濞戝崬鏋ょ紒澶嬪▕濮婃椽宕ㄦ繝鍛棟濠电偞娼欓崲鏌ュ煝閹捐绠ｉ柨鏇楀亾缂佲偓閸儲鐓冮悶娑掆偓鍏呭缂傚倸鍊哥粔鐢稿垂娴ｅ啰浜芥俊鐐€曠换鎰板箠韫囨洜绀婇柛鏇ㄥ灡閻撳啴鏌曟径娑橆洭缂佺姵鐗曢…鑳槾闁哄拋鍋婇獮鍐箥椤旂粯鍕冮梺绋跨箳閸樠囧绩椤撱垺鈷戠紓浣姑慨澶愭煙閾忣偅灏い鏂跨箻閺屽棗顓奸崨顖ｆТ闂佽崵濮崇粈浣革耿鏉堚晝鐭嗛柛鏇ㄥ灡閻撴洟鏌″畵顔煎濞堝苯顪冮妶鍐ㄥ姎闁挎洦浜滈悾?correct_paired_horizontals 闂傚倸鍊风欢锟犲磻閸涱厙锝夊箳閺冣偓椤愯姤銇勯幇鍫曟闁哄拋鍓欓…鍧楁嚋閻㈢偣鈧帞绱掗埀?
@@ -792,7 +837,14 @@ def correct_horizontals(
     rh_rest = {k:v for k,v in right_horizontal.items() if k not in skip_right_keys}
 
     fh_rest2, rh_rest2 = correct_paired_horizontals(
-        fh_rest, rh_rest, front_support_models, right_support_models, round_to_int=round_to_int
+        fh_rest,
+        rh_rest,
+        front_support_models,
+        right_support_models,
+        round_to_int=round_to_int,
+        front_height_span=front_height_span,
+        right_height_span=right_height_span,
+        target_height_span=target_height_span,
     )
     fh_rest2.update(fh_keep)
     rh_rest2.update(rh_keep)

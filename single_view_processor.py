@@ -270,9 +270,15 @@ def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, li
         except (TypeError, ValueError):
             return z1 == z2
 
-    def _remap_token(value, alias_prefix_map):
+    def _remap_token(value, alias_prefix_map, alias_node_map):
         if not isinstance(value, str) or len(value) < 2:
             return value
+
+        if value in alias_node_map:
+            return alias_node_map[value]
+
+        if value.startswith("1") and value[1:] in alias_node_map:
+            return f"1{alias_node_map[value[1:]]}"
 
         prefix = value[:-1]
         suffix = value[-1]
@@ -287,6 +293,34 @@ def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, li
                 return f"1{alias_prefix_map[raw_prefix]}{raw_suffix}"
 
         return value
+
+    def _matching_symmetry_id(source_node, target_node):
+        """Return the target-family node whose symmetry image matches source."""
+        target_id = str(target_node["node_id"])
+        try:
+            sx, sy = float(source_node["X"]), float(source_node["Y"])
+            tx, ty = float(target_node["X"]), float(target_node["Y"])
+        except (TypeError, ValueError):
+            return target_id
+
+        candidates = {
+            "0": (tx, ty),
+            "1": (-tx, ty),
+            "2": (tx, -ty),
+            "3": (-tx, -ty),
+        }
+        suffix = min(
+            candidates,
+            key=lambda key: (sx - candidates[key][0]) ** 2 + (sy - candidates[key][1]) ** 2,
+        )
+        return f"{target_id[:-1]}{suffix}"
+
+    def _replace_member_endpoint(old_node_id, new_node_id):
+        for member in lines0201_ganjian:
+            if str(member["node1_id"]) == old_node_id:
+                member["node1_id"] = new_node_id
+            if str(member["node2_id"]) == old_node_id:
+                member["node2_id"] = new_node_id
 
     def _member_base(member_id):
         text = str(member_id)
@@ -303,6 +337,7 @@ def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, li
     max_z = max_z_node["Z"]
 
     alias_prefix_map = {}
+    alias_node_map = {}
     merged_node_ids = set()
     protected_prefixes = set()
     node_id_set = {str(node.get("node_id", "")) for node in lines0201_jiedian}
@@ -337,38 +372,33 @@ def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, li
             continue
 
         if _z_equal(node["Z"], min_z):
-            alias_prefix_map[temp_prefix] = min_id[:-1]
+            target_id = _matching_symmetry_id(node, min_z_node)
+            alias_node_map[temp_id] = target_id
+            if target_id[-1] == temp_id[-1]:
+                alias_prefix_map[temp_prefix] = min_id[:-1]
             merged_node_ids.add(temp_id)
-            for member in lines0201_ganjian:
-                n1_str = str(member["node1_id"])
-                if len(n1_str) >= 1 and n1_str[:-1] == temp_prefix:
-                    member["node1_id"] = f"{min_id[:-1]}{n1_str[-1]}"
-                n2_str = str(member["node2_id"])
-                if len(n2_str) >= 1 and n2_str[:-1] == temp_prefix:
-                    member["node2_id"] = f"{min_id[:-1]}{n2_str[-1]}"
+            _replace_member_endpoint(temp_id, target_id)
 
         elif _z_equal(node["Z"], max_z):
-            alias_prefix_map[temp_prefix] = max_id[:-1]
+            target_id = _matching_symmetry_id(node, max_z_node)
+            alias_node_map[temp_id] = target_id
+            if target_id[-1] == temp_id[-1]:
+                alias_prefix_map[temp_prefix] = max_id[:-1]
             merged_node_ids.add(temp_id)
-            for member in lines0201_ganjian:
-                n1_str = str(member["node1_id"])
-                if len(n1_str) >= 1 and n1_str[:-1] == temp_prefix:
-                    member["node1_id"] = f"{max_id[:-1]}{n1_str[-1]}"
-                n2_str = str(member["node2_id"])
-                if len(n2_str) >= 1 and n2_str[:-1] == temp_prefix:
-                    if len(n2_str) >= 2 and n2_str[-2] == '1':
-                        member["node2_id"] = f"{max_id[:-1]}{n2_str[-1]}"
-                    elif len(n2_str) >= 2 and n2_str[-2] == '2':
-                        member["node2_id"] = f"{max_id[:-1]}{int(int(n2_str[-1]) / 3 + 1)}"
+            _replace_member_endpoint(temp_id, target_id)
 
-    if alias_prefix_map:
+    if alias_prefix_map or alias_node_map:
         for member in lines0201_ganjian:
-            member["node1_id"] = _remap_token(str(member["node1_id"]), alias_prefix_map)
-            member["node2_id"] = _remap_token(str(member["node2_id"]), alias_prefix_map)
+            member["node1_id"] = _remap_token(
+                str(member["node1_id"]), alias_prefix_map, alias_node_map
+            )
+            member["node2_id"] = _remap_token(
+                str(member["node2_id"]), alias_prefix_map, alias_node_map
+            )
 
         for node in lines0201_jiedian:
             for key in ("X", "Y", "Z"):
-                node[key] = _remap_token(node.get(key), alias_prefix_map)
+                node[key] = _remap_token(node.get(key), alias_prefix_map, alias_node_map)
 
         lines0201_jiedian = [
             node for node in lines0201_jiedian

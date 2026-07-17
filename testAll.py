@@ -28,8 +28,10 @@ import tran2dto3d
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/Z1"
 # danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/T7833"
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/T7833"
-danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/7837"
-tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/7837"
+# danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/7837"
+# tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/7837"
+danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/781"
+tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/781"
 project_path = "/Users/bilibili/Desktop/threewei/Sanwei/output_path"
 savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
 
@@ -39,7 +41,7 @@ tran2dto3d.tran2dto3d( danjia_dir=danjia_dir,
         tashen_dir=tashen_dir,
         project_path=project_path,
         savepath_ui=savepath_ui,
-        drawing_type ="7837")
+        drawing_type ="781")
 
 
 

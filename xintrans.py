@@ -535,6 +535,27 @@ def find_missing_members(ganjian, coordinates_data, main_rod_ids):
     return missing_members, existing_member_ids
 
 
+def detect_main_rods_for_781(coordinates_data, top_k=2):
+    """
+    781 的一类杆件编号含下划线，exec 后会变成 1051/1071 这类整数。
+    现有检测会因“编号最小”规则回退到短杆；781 只按长度取最长两根。
+    """
+    rods = []
+    for rod_id, points in (coordinates_data or {}).items():
+        if len(points) != 2:
+            continue
+        rods.append((rod_id, dist_points(points[0], points[1])))
+    rods.sort(key=lambda item: item[1], reverse=True)
+    result = [rod_id for rod_id, _length in rods[:top_k]]
+    return sorted(result, key=lambda x: int(x) if str(x).isdigit() else str(x))
+
+
+def detect_main_rods_by_type(coordinates_data, drawing_type):
+    if drawing_type == "781":
+        return detect_main_rods_for_781(coordinates_data)
+    return detect_main_rods_enhanced(coordinates_data)
+
+
 
 
 
@@ -582,7 +603,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         pj = [pj[i] for i in (0, 2, 4, 6)]
     elif drawing_type in ("J3", "J4"):
         pj = [pj[i] for i in (1, 0, 3, 2, 5, 4, 7, 6)]
-    elif drawing_type in "T7833":
+    elif drawing_type in ("T7833", "781"):
         pj = [pj[i] for i in (0,2)]
     elif drawing_type in "7837":
         pj = [pj[i] for i in (0,2)]
@@ -603,12 +624,12 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
     # 特例：drawing_type 为 7837 且为 01.txt（drawing_id==1）时，强制走 else 分支（按最上层担架处理）
     if (drawing_type == "7837" and drawing_id == 2) or (
         not (drawing_type == "7837" and drawing_id == 1)
-        and (drawing_type == "T7833" or (drawing_id * 100 + 1 in coordinatesBottom_data))
+        and (drawing_type in ("T7833", "781") or (drawing_id * 100 + 1 in coordinatesBottom_data))
     ): # 处理下面的担架（非最上面的两个担架）
 
-        rod_front_a, rod_front_b = detect_main_rods_enhanced(coordinatesFront_data)
-        rod_bottom_a, rod_bottom_b = detect_main_rods_enhanced(coordinatesBottom_data)
-        rod_overhead_a, rod_overhead_b = detect_main_rods_enhanced(coordinatesOverhead_data)
+        rod_front_a, rod_front_b = detect_main_rods_by_type(coordinatesFront_data, drawing_type)
+        rod_bottom_a, rod_bottom_b = detect_main_rods_by_type(coordinatesBottom_data, drawing_type)
+        rod_overhead_a, rod_overhead_b = detect_main_rods_by_type(coordinatesOverhead_data, drawing_type)
 
         # T7833 正视图一类杆件方向修正：
         # 本分支约定 rod_front_a 对应 pj 下端点(index1)、rod_front_b 对应 pj 上端点(index0)。
@@ -1065,9 +1086,9 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
 
     else:
 
-        rod_front_a, rod_front_b = detect_main_rods_enhanced(coordinatesFront_data)
-        rod_bottom_a, rod_bottom_b = detect_main_rods_enhanced(coordinatesBottom_data)
-        rod_overhead_a, rod_overhead_b = detect_main_rods_enhanced(coordinatesOverhead_data)
+        rod_front_a, rod_front_b = detect_main_rods_by_type(coordinatesFront_data, drawing_type)
+        rod_bottom_a, rod_bottom_b = detect_main_rods_by_type(coordinatesBottom_data, drawing_type)
+        rod_overhead_a, rod_overhead_b = detect_main_rods_by_type(coordinatesOverhead_data, drawing_type)
 
         if drawing_type == "7837" and drawing_id == 1:
             rod_front_a, rod_front_b = rod_front_b, rod_front_a
@@ -1527,7 +1548,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
                 j["symmetry_type"] = 4
 
  #===== T7833 担架对称性生成 =====
-    if drawing_type == "T7833" and drawing_id == 2:
+    if drawing_type in ("T7833", "781") and drawing_id == 2:
         for g in ganjian[ganjian_start:]:
             if g.get("symmetry_type") == 2:
                 g["symmetry_type"] = 4

@@ -371,19 +371,16 @@ def apply_numeric_transform_B(
         if nt == 11:
             if all(k in nd for k in ("X", "Y", "Z")):
                 x_val = float(nd["X"])
-                if str(nd.get("node_id", "")) in signed_x_node_ids:
-                    nd["X"] = round(x_val * s + t[0], 6)
-                else:
-                    nd["X"] = round(abs(x_val) * s + t[0], 6)
-                nd["Y"] = round(float(nd["Y"]) * s , 6)
+                # Every real node shares the same bridge transform.  Taking
+                # abs(X) for non-main-leg nodes mirrors rotated side members
+                # across the tower and creates cross-space connections.
+                nd["X"] = round(x_val * s + t[0], 6)
+                nd["Y"] = round(float(nd["Y"]) * s + t[1], 6)
                 nd["Z"] = round(float(nd["Z"]) * s + t[2], 6)
             elif all(k in nd for k in ("x", "y", "z")):
                 x_val = float(nd["x"])
-                if str(nd.get("node_id", "")) in signed_x_node_ids:
-                    nd["x"] = round(x_val * s + t[0], 6)
-                else:
-                    nd["x"] = round(abs(x_val) * s + t[0], 6)
-                nd["y"] = round(float(nd["y"]) * s, 6)
+                nd["x"] = round(x_val * s + t[0], 6)
+                nd["y"] = round(float(nd["y"]) * s + t[1], 6)
                 nd["z"] = round(float(nd["z"]) * s + t[2], 6)
         elif nt == 12:
             node_id = str(nd.get("node_id", ""))
