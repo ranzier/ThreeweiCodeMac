@@ -556,6 +556,58 @@ def detect_main_rods_by_type(coordinates_data, drawing_type):
     return detect_main_rods_enhanced(coordinates_data)
 
 
+def is_diagonal_rod_above_horizontal_rod(coordinates_data, rod_a_id, rod_b_id):
+    """根据正视图两根一类杆件的上下关系判断担架转换分支。"""
+    rods = []
+    for rod_id in (rod_a_id, rod_b_id):
+        points = coordinates_data.get(rod_id)
+        if not points or len(points) != 2:
+            raise ValueError(f"正视图一类杆件 {rod_id} 缺少两个有效端点")
+
+        p1, p2 = points
+        length = dist_points(p1, p2)
+        if length == 0:
+            raise ValueError(f"正视图一类杆件 {rod_id} 是零长度杆件")
+
+        # 相对杆长的竖向变化越小，越接近水平杆。
+        vertical_ratio = abs(p2[1] - p1[1]) / length
+        rods.append((vertical_ratio, rod_id, points))
+
+    rods.sort(key=lambda item: item[0])
+    if math.isclose(rods[0][0], rods[1][0], abs_tol=1e-9):
+        raise ValueError(
+            f"正视图一类杆件 {rod_a_id}、{rod_b_id} 无法区分水平杆和斜杆"
+        )
+
+    _, horizontal_id, horizontal_points = rods[0]
+    _, diagonal_id, diagonal_points = rods[1]
+    overlap_left = max(
+        min(point[0] for point in horizontal_points),
+        min(point[0] for point in diagonal_points),
+    )
+    overlap_right = min(
+        max(point[0] for point in horizontal_points),
+        max(point[0] for point in diagonal_points),
+    )
+    if overlap_left >= overlap_right:
+        raise ValueError(
+            f"正视图水平杆 {horizontal_id} 与斜杆 {diagonal_id} 没有有效的公共 X 区间"
+        )
+
+    compare_x = (overlap_left + overlap_right) / 2
+
+    def y_at_x(points, x):
+        (x1, y1), (x2, y2) = points
+        if x1 == x2:
+            raise ValueError("正视图一类杆件为竖直杆，无法按 X 坐标比较上下位置")
+        return y1 + (x - x1) * (y2 - y1) / (x2 - x1)
+
+    # 图像坐标的 Y 轴向下，斜杆 Y 更小表示它位于水平杆上方。
+    horizontal_y = y_at_x(horizontal_points, compare_x)
+    diagonal_y = y_at_x(diagonal_points, compare_x)
+    return diagonal_y < horizontal_y
+
+
 
 
 
@@ -597,16 +649,15 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         pj.append(positive_group)
         pj.append(negative_group)
 
-    # ===== J1 担架索引修正 =====
+    # ===== 担架索引修正 =====
     if drawing_type in ("J1", "Z1"):
         # 原 pj 是 8 个担架，这里只取 0,2,4,6 对应的
         pj = [pj[i] for i in (0, 2, 4, 6)]
     elif drawing_type in ("J3", "J4"):
         pj = [pj[i] for i in (1, 0, 3, 2, 5, 4, 7, 6)]
-    elif drawing_type in ("T7833", "781"):
+    elif drawing_type in ("T7833", "781","7837"):
         pj = [pj[i] for i in (0,2)]
-    elif drawing_type in "7837":
-        pj = [pj[i] for i in (0,2)]
+
 
     if drawing_type == "7837" and drawing_id == 2 and len(pj) > 1 and len(pj[1]) >= 2:
         pj[1][0], pj[1][1] = pj[1][1], pj[1][0]
@@ -621,13 +672,16 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
     if drawing_type == "7837":
         jiandian_id = (id_prefix * 100 + 1) * 100 + 70
 
-    # 特例：drawing_type 为 7837 且为 01.txt（drawing_id==1）时，强制走 else 分支（按最上层担架处理）
-    if (drawing_type == "7837" and drawing_id == 2) or (
-        not (drawing_type == "7837" and drawing_id == 1)
-        and (drawing_type in ("T7833", "781") or (drawing_id * 100 + 1 in coordinatesBottom_data))
-    ): # 处理下面的担架（非最上面的两个担架）
+    rod_front_a, rod_front_b = detect_main_rods_by_type(coordinatesFront_data, drawing_type)
+    diagonal_rod_is_above = is_diagonal_rod_above_horizontal_rod(
+        coordinatesFront_data,
+        rod_front_a,
+        rod_front_b,
+    )
 
-        rod_front_a, rod_front_b = detect_main_rods_by_type(coordinatesFront_data, drawing_type)
+    # 正视图斜杆在水平杆上方时走 if 分支，在水平杆下方时走 else 分支。
+    if diagonal_rod_is_above:
+
         rod_bottom_a, rod_bottom_b = detect_main_rods_by_type(coordinatesBottom_data, drawing_type)
         rod_overhead_a, rod_overhead_b = detect_main_rods_by_type(coordinatesOverhead_data, drawing_type)
 
@@ -1086,7 +1140,6 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
 
     else:
 
-        rod_front_a, rod_front_b = detect_main_rods_by_type(coordinatesFront_data, drawing_type)
         rod_bottom_a, rod_bottom_b = detect_main_rods_by_type(coordinatesBottom_data, drawing_type)
         rod_overhead_a, rod_overhead_b = detect_main_rods_by_type(coordinatesOverhead_data, drawing_type)
 
