@@ -2,6 +2,7 @@ import math
 import os
 from collections import defaultdict
 from get_first_ganjian_id import detect_main_rods_enhanced
+from stretcher_geometry import get_main_rod_connection_geometry
 
 
 def count_txt_files(folder_path):
@@ -659,11 +660,6 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         pj = [pj[i] for i in (0,2)]
 
 
-    if drawing_type == "7837" and drawing_id == 2 and len(pj) > 1 and len(pj[1]) >= 2:
-        pj[1][0], pj[1][1] = pj[1][1], pj[1][0]
-
-
-    print(pj)
     # 担架编号偏移：担架和塔身合并的图纸（如 T7833/7837，塔身目录下存在 01.txt）担架从 3 号起，
     # 需 +2（1→3, 2→4），保证担架和塔身的节点编号生成不会重复。是否偏移由调用方 work() 传入。
     id_prefix = drawing_id + 2 if id_offset else drawing_id
@@ -673,6 +669,11 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         jiandian_id = (id_prefix * 100 + 1) * 100 + 70
 
     rod_front_a, rod_front_b = detect_main_rods_by_type(coordinatesFront_data, drawing_type)
+    _, upper_front_rod, lower_front_rod = get_main_rod_connection_geometry(
+        coordinatesFront_data,
+        rod_front_a,
+        rod_front_b,
+    )
     diagonal_rod_is_above = is_diagonal_rod_above_horizontal_rod(
         coordinatesFront_data,
         rod_front_a,
@@ -685,12 +686,8 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         rod_bottom_a, rod_bottom_b = detect_main_rods_by_type(coordinatesBottom_data, drawing_type)
         rod_overhead_a, rod_overhead_b = detect_main_rods_by_type(coordinatesOverhead_data, drawing_type)
 
-        # T7833 正视图一类杆件方向修正：
-        # 本分支约定 rod_front_a 对应 pj 下端点(index1)、rod_front_b 对应 pj 上端点(index0)。
-        # 但 T7833 中编号小的(如105)是上杆、编号大的(如107)是下杆，与约定相反，
-        # 故对调 a/b，使 section2 的二类节点Y引用与 section5 的一类杆件接续都落到正确的上下端点。
-        if drawing_type == "T7833" or (drawing_type == "7837" and drawing_id == 2):
-            rod_front_a, rod_front_b = rod_front_b, rod_front_a
+        # 本分支约定 a 对应下连接点(index1)，b 对应上连接点(index0)。
+        rod_front_a, rod_front_b = lower_front_rod, upper_front_rod
 
         rod_101_id, rod_102_id = rod_bottom_a, rod_bottom_b
         rod_103_id, rod_104_id = rod_overhead_a, rod_overhead_b
@@ -1143,8 +1140,8 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         rod_bottom_a, rod_bottom_b = detect_main_rods_by_type(coordinatesBottom_data, drawing_type)
         rod_overhead_a, rod_overhead_b = detect_main_rods_by_type(coordinatesOverhead_data, drawing_type)
 
-        if drawing_type == "7837" and drawing_id == 1:
-            rod_front_a, rod_front_b = rod_front_b, rod_front_a
+        # 本分支约定 a 对应上连接点(index0)，b 对应下连接点(index1)。
+        rod_front_a, rod_front_b = upper_front_rod, lower_front_rod
 
         rod_101_id, rod_102_id = rod_overhead_a, rod_overhead_b
         rod_103_id, rod_104_id = rod_bottom_a, rod_bottom_b

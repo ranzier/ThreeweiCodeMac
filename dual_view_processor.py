@@ -278,65 +278,87 @@ def _classify_reference_tiers(
         if str(k) not in tier1
     }
 
+    reference_depth: Dict[str, int] = {member_id: 0 for member_id in tier1}
+
     def find_host(pt: Coord, host_dict: CoordDict) -> Optional[str]:
-        best_d = float("inf")
-        best_k: Optional[str] = None
+        best: Optional[Tuple[float, int, str]] = None
         for host_key, seg in (host_dict or {}).items():
             if not seg or len(seg) < 2:
                 continue
             d = _point_to_segment_distance(pt, seg[0], seg[1])
-            if d < best_d:
-                best_d = d
-                best_k = str(host_key)
-        return best_k if best_d <= tolerance else None
+            host_id = str(host_key)
+            candidate = (d, reference_depth.get(host_id, 0), host_id)
+            if best is None or candidate < best:
+                best = candidate
+        return best[2] if best is not None and best[0] <= tolerance else None
 
     tier2: CoordDict = {}
     tier3: CoordDict = {}
     endpoint_hosts: Dict[str, List[Optional[Dict[str, str]]]] = {}
 
-    for member_id, seg in list(remaining.items()):
-        if not seg or len(seg) < 2:
-            continue
-        h1 = find_host(seg[0], tier1)
-        h2 = find_host(seg[1], tier1)
-        if h1 and h2:
-            tier2[member_id] = seg
-            endpoint_hosts[member_id] = [
-                {"kind": "tier1", "host": h1},
-                {"kind": "tier1", "host": h2},
-            ]
-            del remaining[member_id]
+    resolved: CoordDict = dict(tier1)
+    while remaining:
+        resolved_this_round = []
+        for member_id in sorted(remaining):
+            seg = remaining[member_id]
+            if not seg or len(seg) < 2:
+                continue
 
-    for member_id, seg in list(remaining.items()):
-        if not seg or len(seg) < 2:
-            continue
-        h1_t1 = find_host(seg[0], tier1)
-        h2_t1 = find_host(seg[1], tier1)
-        h1_t2 = find_host(seg[0], tier2) if not h1_t1 else None
-        h2_t2 = find_host(seg[1], tier2) if not h2_t1 else None
+            host_ids = [find_host(pt, resolved) for pt in seg[:2]]
+            available_hosts = [host_id for host_id in host_ids if host_id]
+            if not available_hosts:
+                continue
 
-        if h1_t1 and h2_t1:
-            continue
+            depth = 1 + max(reference_depth[host_id] for host_id in available_hosts)
+            reference_depth[member_id] = depth
+            target_tier = tier2 if depth == 1 else tier3
+            target_tier[member_id] = seg
+            resolved_this_round.append(member_id)
 
-        host1 = (
-            {"kind": "tier1", "host": h1_t1} if h1_t1
-            else {"kind": "tier2", "host": h1_t2} if h1_t2
-            else None
-        )
-        host2 = (
-            {"kind": "tier1", "host": h2_t1} if h2_t1
-            else {"kind": "tier2", "host": h2_t2} if h2_t2
-            else None
-        )
-        if host1 and host2:
-            tier3[member_id] = seg
-            endpoint_hosts[member_id] = [host1, host2]
+        if not resolved_this_round:
+            break
+
+        # Only expose a completed round as hosts for the next round. This
+        # keeps dependency depth deterministic regardless of source ordering.
+        for member_id in resolved_this_round:
+            resolved[member_id] = remaining.pop(member_id)
+
+    # Re-evaluate endpoints in export order. A member may enter the graph
+    # through one attached end; its other end can then attach to an earlier
+    # peer at the shared apex of a triangle without creating a dependency
+    # cycle.
+    available: CoordDict = dict(tier1)
+    ordered_members = sorted(
+        {**tier2, **tier3},
+        key=lambda member_id: (reference_depth[member_id], member_id),
+    )
+    for member_id in ordered_members:
+        seg = tier2.get(member_id) or tier3[member_id]
+        hosts: List[Optional[Dict[str, str]]] = []
+        for pt in seg[:2]:
+            host_id = find_host(pt, available)
+            if not host_id:
+                hosts.append(None)
+                continue
+            host_depth = reference_depth[host_id]
+            hosts.append({
+                "kind": (
+                    "tier1" if host_depth == 0
+                    else "tier2" if host_depth == 1
+                    else "tier3"
+                ),
+                "host": host_id,
+            })
+        endpoint_hosts[member_id] = hosts
+        available[member_id] = seg
 
     return {
         "tier1": set(tier1.keys()),
         "tier2": set(tier2.keys()),
         "tier3": set(tier3.keys()),
         "endpoint_hosts": endpoint_hosts,
+        "reference_depth": reference_depth,
+        "unresolved": set(remaining.keys()),
     }
 
 # def _fix_xmembers(front_x: CoordDict, right_x: CoordDict,
@@ -470,7 +492,7 @@ def main(data_dir: str):
 
     all_models_data = {}
     if two_view_files:
-        print("\\n" + "#" * 60)
+        print("\n" + "#" * 60)
         print("## 步骤 2: 开始处理双视图文件...")
         print("#" * 60)
         for fp in two_view_files:
@@ -498,6 +520,16 @@ def main(data_dir: str):
             H_TOL = min(25.0, max(10.0, vertical_span * 0.005))
             front_support = find_supports(front_raw)
             right_support = find_supports(right_raw)
+            if len(front_support) < 2 or len(right_support) < 2:
+                print(
+                    "  - 错误：主杆识别不足，无法建立双视图基座，跳过。"
+                    f"（正面={len(front_support)}, 侧面={len(right_support)}）"
+                )
+                continue
+            # Keep the unmodified CAD legs so secondary endpoints can later
+            # be matched to their original host before the legs are refitted.
+            front_source_support = dict(front_support)
+            right_source_support = dict(right_support)
 
             front_horizontal = find_horizontals(
                 {k: v for k, v in front_raw.items() if k not in front_support},
@@ -797,10 +829,18 @@ def main(data_dir: str):
             # diagonal endpoints retain their view-local CAD heights and the
             # front/right representations drift onto different Z layers.
             class2_front = remap_vertical_coordinates(
-                {**f_fixed, **front_remaining}, front_height_span, canonical_height_span
+                {**f_fixed, **front_remaining},
+                front_height_span,
+                canonical_height_span,
+                source_support=front_source_support,
+                target_support=front_support,
             )
             class2_right = remap_vertical_coordinates(
-                {**r_fixed, **right_remaining}, right_height_span, canonical_height_span
+                {**r_fixed, **right_remaining},
+                right_height_span,
+                canonical_height_span,
+                source_support=right_source_support,
+                target_support=right_support,
             )
 
             front_total = {**front_support, **front_horizontal, **class2_front}
@@ -999,7 +1039,7 @@ def main(data_dir: str):
             ganjian_stage1, jiedian_stage1, pinjie_stage1, id_aliases
         )
     else:
-        print("\\n未处理任何双视图文件。本程序只处理双视图数据，单视图将被跳过。")
+        print("\n未处理任何双视图文件。本程序只处理双视图数据，单视图将被跳过。")
         ganjian_stage1, jiedian_stage1, pinjie_stage1 = [], [], []
 
     if single_view_files:

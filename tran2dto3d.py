@@ -1,6 +1,6 @@
 import xintrans
 import tower_body_reconstruction
-import t7833_pinjie
+import stretcher_tower_connection
 import pandas as pd
 import os
 
@@ -128,18 +128,20 @@ def tran2dto3d(danjia_dir,tashen_dir,project_path,savepath_ui,drawing_type):
 
     ganjian_tashen, jiedian_tashen, pinjie_tashen = tower_body_reconstruction.build_tower_body(tashen_dir)
 
-    # T7833/7837 拼接点识别逻辑与其他图纸不同：改由担架一类杆件端点匹配塔身正视图横杆，
-    # 再从塔身 jiedian/ganjian 取连接点。仅这两类图纸替换 pinjie，其他图纸沿用塔身自带的 pinjie。
-    # 差异：T7833 所有担架取左端、编号小=上杆；7837 担架朝向相反——
-    # 1号担架(01.txt)取右端、2号担架(02.txt)取左端，且编号小=下杆（swap_updown）。
+    # T7833/781/7837 根据担架正视图几何关系识别连接侧和上下杆，
+    # 再用连接端点匹配塔身正视图横杆。仅这三类图纸替换 pinjie。
     if drawing_type == "T7833":
-        pinjie_tashen = t7833_pinjie.build_pinjie_for_t7833(
+        pinjie_tashen = stretcher_tower_connection.build_stretcher_tower_pinjie(
             danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen
         )
-    elif drawing_type == "7837":
-        pinjie_tashen = t7833_pinjie.build_pinjie_for_t7833(
+    elif drawing_type == "781":
+        pinjie_tashen = stretcher_tower_connection.build_stretcher_tower_pinjie(
             danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen,
-            end_side_by_index={0: "right", 1: "left"}, swap_updown=True
+            longest_main_rods=True
+        )
+    elif drawing_type == "7837":
+        pinjie_tashen = stretcher_tower_connection.build_stretcher_tower_pinjie(
+            danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen
         )
 
     jiedian_danjia,ganjian_danjia= xintrans.work(danjia_dir, pinjie_tashen,drawing_type, tashen_dir)

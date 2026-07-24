@@ -294,11 +294,64 @@ def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, li
 
         return value
 
+    node_lookup = {
+        str(node.get("node_id", "")): node
+        for node in lines0201_jiedian
+    }
+
+    def _resolved_xyz(node_id, resolving=None):
+        """Resolve an in-sheet type-12 node before selecting a seam alias."""
+        node_id = str(node_id)
+        resolving = set() if resolving is None else resolving
+        if node_id in resolving:
+            return None
+
+        node = node_lookup.get(node_id)
+        if node is None:
+            return None
+
+        values = [node.get(key) for key in ("X", "Y", "Z")]
+        ref_indexes = [index for index, value in enumerate(values) if isinstance(value, str)]
+        if not ref_indexes:
+            try:
+                return tuple(float(value) for value in values)
+            except (TypeError, ValueError):
+                return None
+        if len(ref_indexes) != 2:
+            return None
+
+        real_index = next(index for index in range(3) if index not in ref_indexes)
+        try:
+            real_value = float(values[real_index])
+        except (TypeError, ValueError):
+            return None
+
+        point_a = _resolved_xyz(values[ref_indexes[0]], resolving | {node_id})
+        point_b = _resolved_xyz(values[ref_indexes[1]], resolving | {node_id})
+        if point_a is None or point_b is None:
+            return None
+
+        span = point_b[real_index] - point_a[real_index]
+        if abs(span) < 1e-9:
+            return None
+        ratio = (real_value - point_a[real_index]) / span
+        return tuple(
+            real_value if index == real_index
+            else point_a[index] + ratio * (point_b[index] - point_a[index])
+            for index in range(3)
+        )
+
     def _matching_symmetry_id(source_node, target_node):
         """Return the target-family node whose symmetry image matches source."""
         target_id = str(target_node["node_id"])
         try:
             sx, sy = float(source_node["X"]), float(source_node["Y"])
+        except (TypeError, ValueError):
+            resolved = _resolved_xyz(source_node.get("node_id", ""))
+            if resolved is None:
+                return target_id
+            sx, sy = resolved[0], resolved[1]
+        try:
             tx, ty = float(target_node["X"]), float(target_node["Y"])
         except (TypeError, ValueError):
             return target_id
@@ -367,6 +420,17 @@ def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, li
     for node in lines0201_jiedian:
         temp_id = str(node["node_id"])
         temp_prefix = temp_id[:-1]
+
+        # Side-face nodes are physical rotations.  Sharing a height with a
+        # main-leg endpoint does not make them the same node.
+        if node.get("_view_face") == "side":
+            continue
+
+        # Type-12 endpoints already lie on their host member by reference.
+        # Replacing them solely because they share a support-end height can
+        # collapse distinct left/right attachments into one node family.
+        if node.get("node_type") == 12:
+            continue
 
         if temp_prefix in protected_prefixes:
             continue
@@ -617,6 +681,7 @@ def single_view(filelist, filepath):
         lines0201_ganjian, lines0201_jiedian = t21.single_view0201(
             line_coord,
             front_only=False,
+            keep_view_face=True,
         )
         
         # 进行一二类间修正
@@ -646,5 +711,7 @@ def single_view(filelist, filepath):
     
     # 节点格式修正
     res_jiedian = correct_format_jiedian(res_jiedian)
+    for node in res_jiedian:
+        node.pop("_view_face", None)
     
     return res_ganjian, res_jiedian

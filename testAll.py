@@ -36,6 +36,10 @@ project_path = "/Users/bilibili/Desktop/threewei/Sanwei/output_path"
 savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
 
 
+# todo: 担架个数+担架位置+担架对称性的通用性
+# todo: 7837图纸最上面担架的特定代码逻辑的通用性
+# todo: 7837尖点编号ID偏移+70
+# todo: Z1图纸的担架1和担架4存在问题
 
 tran2dto3d.tran2dto3d( danjia_dir=danjia_dir,
         tashen_dir=tashen_dir,

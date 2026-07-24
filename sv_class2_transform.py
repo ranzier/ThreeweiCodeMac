@@ -301,7 +301,17 @@ def _legacy_single_view0201(line_coord):
     return ganjian, jiedian
 
 
-def _make_node_record(node_id, node_type, symmetry_type, x_value, y_value, z_value, front_xy, export=True):
+def _make_node_record(
+    node_id,
+    node_type,
+    symmetry_type,
+    x_value,
+    y_value,
+    z_value,
+    front_xy,
+    export=True,
+    view_face="front",
+):
     return {
         "node_id": str(node_id),
         "node_type": int(node_type),
@@ -311,17 +321,30 @@ def _make_node_record(node_id, node_type, symmetry_type, x_value, y_value, z_val
         "Z": z_value,
         "_xyz": (x_value, y_value, z_value),
         "_front_xy": tuple(front_xy) if front_xy is not None else None,
+        "_view_face": str(view_face),
         "_member_links": [],
         "_export": bool(export),
     }
 
 
-def _upsert_node_record(node_records, node_id, node_type, symmetry_type, x_value, y_value, z_value, front_xy, export=True):
+def _upsert_node_record(
+    node_records,
+    node_id,
+    node_type,
+    symmetry_type,
+    x_value,
+    y_value,
+    z_value,
+    front_xy,
+    export=True,
+    view_face="front",
+):
     node_id = str(node_id)
     record = node_records.get(node_id)
     if record is None:
         record = _make_node_record(
-            node_id, node_type, symmetry_type, x_value, y_value, z_value, front_xy, export=export
+            node_id, node_type, symmetry_type, x_value, y_value, z_value, front_xy,
+            export=export, view_face=view_face
         )
         node_records[node_id] = record
         return record
@@ -333,6 +356,7 @@ def _upsert_node_record(node_records, node_id, node_type, symmetry_type, x_value
     record["Z"] = z_value
     record["_xyz"] = (x_value, y_value, z_value)
     record["_front_xy"] = tuple(front_xy) if front_xy is not None else None
+    record["_view_face"] = str(view_face)
     record["_export"] = record["_export"] or bool(export)
     return record
 
@@ -354,6 +378,7 @@ def _ensure_virtual_node(node_records, node_id, source_id):
         source["Z"],
         source["_front_xy"],
         export=False,
+        view_face=source.get("_view_face", "front"),
     )
     node_records[node_id] = record
     return record
@@ -470,19 +495,22 @@ def _debug_dump_member_links(node_records):
     print("-" * 50 + "\n")
 
 
-def _export_node_records(node_records):
+def _export_node_records(node_records, include_view_face=False):
     jiedian = []
     for record in node_records.values():
         if not record["_export"]:
             continue
-        jiedian.append({
+        node = {
             "node_id": record["node_id"],
             "node_type": record["node_type"],
             "symmetry_type": record["symmetry_type"],
             "X": record["X"],
             "Y": record["Y"],
             "Z": record["Z"],
-        })
+        }
+        if include_view_face:
+            node["_view_face"] = record.get("_view_face", "front")
+        jiedian.append(node)
     return jiedian
 
 
@@ -510,6 +538,7 @@ def single_view0201(
     return_debug_nodes=False,
     debug_member_trace=False,
     front_only=True,
+    keep_view_face=False,
 ):
     print("\n" + "=" * 50)
     print("====== 开始执行严格 6 步引用拓扑法（节点记录驱动版） ======")
@@ -538,9 +567,20 @@ def single_view0201(
                 return test_nid
         return f"{base_id}99"
 
-    def add_node(node_id, node_type, symmetry_type, x_value, y_value, z_value, front_xy, export=True):
+    def add_node(
+        node_id,
+        node_type,
+        symmetry_type,
+        x_value,
+        y_value,
+        z_value,
+        front_xy,
+        export=True,
+        view_face="front",
+    ):
         return _upsert_node_record(
-            node_records, node_id, node_type, symmetry_type, x_value, y_value, z_value, front_xy, export=export
+            node_records, node_id, node_type, symmetry_type, x_value, y_value, z_value,
+            front_xy, export=export, view_face=view_face
         )
 
     def add_member(member_id, symmetry_type, node1_id, node2_id, variant, source1=None, source2=None):
@@ -655,8 +695,8 @@ def single_view0201(
         side_node2 = get_safe_nid(node_base)
         x1, y1, z1 = point1
         x2, y2, z2 = point2
-        add_node(side_node1, 11, 4, y1, -x1, z1, None, export=True)
-        add_node(side_node2, 11, 4, y2, -x2, z2, None, export=True)
+        add_node(side_node1, 11, 4, y1, -x1, z1, None, export=True, view_face="side")
+        add_node(side_node2, 11, 4, y2, -x2, z2, None, export=True, view_face="side")
         add_member(member_id, 4, side_node1, side_node2, variant=variant)
         return str(side_node1), str(side_node2)
 
@@ -768,6 +808,7 @@ def single_view0201(
                     endpoint_info["z"],
                     endpoint_info["front_xy"],
                     export=True,
+                    view_face="side",
                 )
                 return str(side_node_id), str(side_node_id)
             return _replace_node_suffix(node_id, "2"), node_id
@@ -897,7 +938,7 @@ def single_view0201(
     ganjian = _build_members_from_node_records(
         node_records, member_specs, member_order, debug_member_trace=debug_member_trace
     )
-    jiedian = _export_node_records(node_records)
+    jiedian = _export_node_records(node_records, include_view_face=keep_view_face)
 
     print(f"[完成] 单视图二/三类节点数: {len(jiedian)} | 杆件数: {len(ganjian)}")
     print("=" * 50 + "\n")
