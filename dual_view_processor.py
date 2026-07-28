@@ -260,6 +260,35 @@ def _point_to_segment_distance(p: Coord, a: Coord, b: Coord) -> float:
     return math.hypot(x0 - px, y0 - py)
 
 
+def _segment_projection_ratio(p: Coord, a: Coord, b: Coord) -> Optional[float]:
+    """Return the unbounded projection ratio of ``p`` on segment ``ab``."""
+    x0, y0 = p
+    x1, y1 = a
+    x2, y2 = b
+    dx = x2 - x1
+    dy = y2 - y1
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 1e-12:
+        return None
+    return ((x0 - x1) * dx + (y0 - y1) * dy) / length_sq
+
+
+def _is_segment_interior_projection(
+    p: Coord,
+    a: Coord,
+    b: Coord,
+    endpoint_margin: float,
+) -> bool:
+    """Return whether the projection of ``p`` is clearly inside segment ``ab``."""
+    ratio = _segment_projection_ratio(p, a, b)
+    if ratio is None:
+        return False
+
+    length = math.hypot(b[0] - a[0], b[1] - a[1])
+    margin_ratio = min(0.5, endpoint_margin / length)
+    return margin_ratio < ratio < 1.0 - margin_ratio
+
+
 def _classify_reference_tiers(
     all_members: CoordDict,
     class1_members: CoordDict,
@@ -280,21 +309,41 @@ def _classify_reference_tiers(
 
     reference_depth: Dict[str, int] = {member_id: 0 for member_id in tier1}
 
-    def find_host(pt: Coord, host_dict: CoordDict) -> Optional[str]:
-        best: Optional[Tuple[float, int, str]] = None
+    def find_host(
+        pt: Coord,
+        host_dict: CoordDict,
+        excluded_ids: Optional[set[str]] = None,
+    ) -> Optional[str]:
+        excluded = excluded_ids or set()
+        best: Optional[Tuple[int, float, int, str]] = None
         for host_key, seg in (host_dict or {}).items():
             if not seg or len(seg) < 2:
                 continue
             d = _point_to_segment_distance(pt, seg[0], seg[1])
             host_id = str(host_key)
-            candidate = (d, reference_depth.get(host_id, 0), host_id)
+            if host_id in excluded or d > tolerance:
+                continue
+            # A brace endpoint lying inside another rod is an attachment to
+            # that rod. An exact match with a peer brace endpoint only means
+            # the two braces share the joint; treating the peer as the host
+            # creates a mutual-reference cycle and discards the real host.
+            endpoint_margin = max(1.0, tolerance * 0.1)
+            is_interior = _is_segment_interior_projection(
+                pt, seg[0], seg[1], endpoint_margin
+            )
+            candidate = (
+                0 if is_interior else 1,
+                d,
+                reference_depth.get(host_id, 0),
+                host_id,
+            )
             if best is None or candidate < best:
                 best = candidate
-        return best[2] if best is not None and best[0] <= tolerance else None
+        return best[3] if best is not None else None
 
     tier2: CoordDict = {}
     tier3: CoordDict = {}
-    endpoint_hosts: Dict[str, List[Optional[Dict[str, str]]]] = {}
+    endpoint_hosts: Dict[str, List[Optional[Dict[str, object]]]] = {}
 
     resolved: CoordDict = dict(tier1)
     while remaining:
@@ -323,34 +372,84 @@ def _classify_reference_tiers(
         for member_id in resolved_this_round:
             resolved[member_id] = remaining.pop(member_id)
 
-    # Re-evaluate endpoints in export order. A member may enter the graph
-    # through one attached end; its other end can then attach to an earlier
-    # peer at the shared apex of a triangle without creating a dependency
-    # cycle.
-    available: CoordDict = dict(tier1)
-    ordered_members = sorted(
-        {**tier2, **tier3},
-        key=lambda member_id: (reference_depth[member_id], member_id),
-    )
-    for member_id in ordered_members:
-        seg = tier2.get(member_id) or tier3[member_id]
-        hosts: List[Optional[Dict[str, str]]] = []
-        for pt in seg[:2]:
-            host_id = find_host(pt, available)
+    # Resolve every endpoint against the complete reachable graph. Restricting
+    # this pass to already-exported members makes the result depend on member
+    # numbering and leaves the first rod at a triangular junction unattached.
+    secondary: CoordDict = {**tier2, **tier3}
+    all_reachable: CoordDict = {**tier1, **secondary}
+    endpoint_host_ids: Dict[str, List[Optional[str]]] = {}
+    for member_id, seg in secondary.items():
+        endpoint_host_ids[member_id] = [
+            find_host(pt, all_reachable, excluded_ids={member_id})
+            for pt in seg[:2]
+        ]
+
+    # Build an acyclic export order. Mutual references can occur where two
+    # braces share an apex. In that case one endpoint remains a real anchor
+    # and the opposite dependency is retained, which closes the junction
+    # without creating an unresolvable reference cycle.
+    pending = set(secondary)
+    scheduled = set(tier1)
+    export_order: List[str] = []
+    while pending:
+        ready = sorted(
+            member_id
+            for member_id in pending
+            if all(
+                host_id in scheduled
+                for host_id in endpoint_host_ids[member_id]
+                if host_id is not None
+            )
+        )
+        if not ready:
+            anchor = min(pending)
+            endpoint_host_ids[anchor] = [
+                None if host_id in pending else host_id
+                for host_id in endpoint_host_ids[anchor]
+            ]
+            ready = [anchor]
+
+        for member_id in ready:
+            pending.remove(member_id)
+            scheduled.add(member_id)
+            export_order.append(member_id)
+
+    reference_depth = {member_id: 0 for member_id in tier1}
+    endpoint_hosts.clear()
+    tier2.clear()
+    tier3.clear()
+    for member_id in export_order:
+        host_ids = endpoint_host_ids[member_id]
+        host_depths = [reference_depth[host_id] for host_id in host_ids if host_id]
+        depth = 1 + max(host_depths, default=0)
+        reference_depth[member_id] = depth
+        (tier2 if depth == 1 else tier3)[member_id] = secondary[member_id]
+        hosts: List[Optional[Dict[str, object]]] = []
+        for endpoint_index, host_id in enumerate(host_ids):
             if not host_id:
                 hosts.append(None)
                 continue
             host_depth = reference_depth[host_id]
-            hosts.append({
+            host_data: Dict[str, object] = {
                 "kind": (
                     "tier1" if host_depth == 0
                     else "tier2" if host_depth == 1
                     else "tier3"
                 ),
                 "host": host_id,
-            })
+            }
+            host_segment = all_reachable.get(host_id)
+            member_segment = secondary.get(member_id)
+            if host_segment and member_segment and endpoint_index < len(member_segment):
+                source_ratio = _segment_projection_ratio(
+                    member_segment[endpoint_index],
+                    host_segment[0],
+                    host_segment[1],
+                )
+                if source_ratio is not None:
+                    host_data["ratio"] = max(0.0, min(1.0, source_ratio))
+            hosts.append(host_data)
         endpoint_hosts[member_id] = hosts
-        available[member_id] = seg
 
     return {
         "tier1": set(tier1.keys()),
@@ -539,6 +638,10 @@ def main(data_dir: str):
                 {k: v for k, v in right_raw.items() if k not in right_support},
                 tol_y=H_TOL
             )
+            # Reference topology belongs to the source CAD drawing.  Keep it
+            # separate from the geometry that is later symmetrized/refitted.
+            front_source_horizontal = dict(front_horizontal)
+            right_source_horizontal = dict(right_horizontal)
 
 
             front_rest = {k: v for k, v in front_raw.items()
@@ -828,15 +931,17 @@ def main(data_dir: str):
             # basis as the corrected main legs/horizontals.  Without this,
             # diagonal endpoints retain their view-local CAD heights and the
             # front/right representations drift onto different Z layers.
+            front_secondary_source = {**f_fixed, **front_remaining}
+            right_secondary_source = {**r_fixed, **right_remaining}
             class2_front = remap_vertical_coordinates(
-                {**f_fixed, **front_remaining},
+                front_secondary_source,
                 front_height_span,
                 canonical_height_span,
                 source_support=front_source_support,
                 target_support=front_support,
             )
             class2_right = remap_vertical_coordinates(
-                {**r_fixed, **right_remaining},
+                right_secondary_source,
                 right_height_span,
                 canonical_height_span,
                 source_support=right_source_support,
@@ -845,13 +950,24 @@ def main(data_dir: str):
 
             front_total = {**front_support, **front_horizontal, **class2_front}
             right_total = {**right_support, **right_horizontal, **class2_right}
+            # Determine attachments from the unmodified CAD coordinates.
+            # Geometry remapping can move only one member at a junction and
+            # would otherwise erase valid secondary-to-secondary references.
             front_reference_tiers = _classify_reference_tiers(
-                front_total,
-                {**front_support, **front_horizontal},
+                {
+                    **front_source_support,
+                    **front_source_horizontal,
+                    **front_secondary_source,
+                },
+                {**front_source_support, **front_source_horizontal},
             )
             right_reference_tiers = _classify_reference_tiers(
-                right_total,
-                {**right_support, **right_horizontal},
+                {
+                    **right_source_support,
+                    **right_source_horizontal,
+                    **right_secondary_source,
+                },
+                {**right_source_support, **right_source_horizontal},
             )
 
             fbases = extract_bases_front(front_support, front_horizontal)

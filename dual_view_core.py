@@ -414,14 +414,17 @@ def remap_vertical_coordinates(
                 best_distance = distance
         return best_id if best_distance <= support_tolerance else None
 
-    def _x_on_support(segment: List[Coord], y_value: float) -> Optional[float]:
+    def _projection_ratio(point: Coord, segment: List[Coord]) -> Optional[float]:
         if len(segment) != 2:
             return None
+        px, py = point
         (x1, y1), (x2, y2) = segment
-        dy = y2 - y1
-        if abs(dy) < 1e-9:
+        dx, dy = x2 - x1, y2 - y1
+        length_sq = dx * dx + dy * dy
+        if length_sq <= 1e-12:
             return None
-        return x1 + (y_value - y1) * (x2 - x1) / dy
+        ratio = ((px - x1) * dx + (py - y1) * dy) / length_sq
+        return max(0.0, min(1.0, ratio))
 
     out: CoordDict = {}
     for member_id, segment in view.items():
@@ -435,11 +438,22 @@ def remap_vertical_coordinates(
             target_y = float(target_low) + level * (float(target_high) - float(target_low))
             target_x = float(x_value)
             support_id = _attached_support_id(source_point)
+            source_segment = source_support.get(support_id) if support_id else None
             target_segment = target_support.get(support_id) if support_id else None
-            if target_segment:
-                projected_x = _x_on_support(target_segment, target_y)
-                if projected_x is not None:
-                    target_x = projected_x
+            if source_segment and target_segment and len(target_segment) == 2:
+                support_ratio = _projection_ratio(source_point, source_segment)
+                if support_ratio is not None:
+                    target_start, target_end = target_segment
+                    source_dy = source_segment[1][1] - source_segment[0][1]
+                    target_dy = target_end[1] - target_start[1]
+                    if source_dy * target_dy < 0:
+                        target_start, target_end = target_end, target_start
+                    target_x = target_start[0] + support_ratio * (
+                        target_end[0] - target_start[0]
+                    )
+                    target_y = target_start[1] + support_ratio * (
+                        target_end[1] - target_start[1]
+                    )
             points.append((target_x, target_y))
         out[str(member_id)] = points
     return out
@@ -1778,6 +1792,16 @@ def _sym_pt(pt: Point3D, sym_type: int) -> Point3D:
 def _dist3(a: Point3D, b: Point3D) -> float:
     return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2)
 
+def _point_to_segment_distance3(pt: Point3D, a: Point3D, b: Point3D) -> float:
+    ab = tuple(b[i] - a[i] for i in range(3))
+    ap = tuple(pt[i] - a[i] for i in range(3))
+    length_sq = sum(value * value for value in ab)
+    if length_sq <= 1e-12:
+        return _dist3(pt, a)
+    ratio = max(0.0, min(1.0, sum(ap[i] * ab[i] for i in range(3)) / length_sq))
+    projection = tuple(a[i] + ratio * ab[i] for i in range(3))
+    return _dist3(pt, projection)
+
 def _sort_lr(p1: Point3D, p2: Point3D) -> Tuple[Point3D, Point3D]:
     if (p1[0], p1[1]) <= (p2[0], p2[1]):
         return p1, p2
@@ -1813,7 +1837,13 @@ def _reference_value(node_id: str) -> str:
     return f"1{str(node_id)}"
 
 
-def _reference_node_values(pt: Point3D, ref_ids: Tuple[str, str], ref_seg: List[Point3D]) -> Dict[str, object]:
+def _reference_node_values(
+    pt: Point3D,
+    ref_ids: Tuple[str, str],
+    ref_seg: List[Point3D],
+    ratio_tolerance: float = 1e-3,
+    reference_ratio: Optional[float] = None,
+) -> Dict[str, object]:
     """
     Build a node_type=12 coordinate payload.
 
@@ -1832,17 +1862,31 @@ def _reference_node_values(pt: Point3D, ref_ids: Tuple[str, str], ref_seg: List[
     span = ref_seg[1][real_axis] - ref_seg[0][real_axis]
     if abs(span) <= 1e-8:
         raise ValueError(f"reference member {ref_ids} has no usable coordinate span")
-    ratio = (pt[real_axis] - ref_seg[0][real_axis]) / span
-    if ratio < -1e-6 or ratio > 1.0 + 1e-6:
-        raise ValueError(
-            f"reference node lies outside host member {ref_ids}: t={ratio:.6f}"
+    measured_ratio = (pt[real_axis] - ref_seg[0][real_axis]) / span
+    if reference_ratio is None:
+        if (
+            measured_ratio < -ratio_tolerance
+            or measured_ratio > 1.0 + ratio_tolerance
+        ):
+            raise ValueError(
+                f"reference node lies outside host member {ref_ids}: "
+                f"t={measured_ratio:.6f}"
+            )
+        ratio = max(0.0, min(1.0, measured_ratio))
+    else:
+        source_ratio = max(0.0, min(1.0, float(reference_ratio)))
+        reversed_ratio = 1.0 - source_ratio
+        ratio = min(
+            (source_ratio, reversed_ratio),
+            key=lambda candidate: abs(candidate - measured_ratio),
         )
+    real_value = ref_seg[0][real_axis] + ratio * span
 
     ref_iter = iter((_reference_value(ref_ids[0]), _reference_value(ref_ids[1])))
     values: Dict[str, object] = {}
     for idx, axis_name in enumerate(axis_names):
         if idx == real_axis:
-            values[axis_name] = round(pt[idx], 3)
+            values[axis_name] = round(real_value, 3)
         else:
             values[axis_name] = next(ref_iter)
     return values
@@ -1892,6 +1936,43 @@ def generate_outputs(final_coords_map: Dict[str, List[Point3D]], all_models_data
                 return hosts[endpoint_index]
             return None
 
+        def _reference_node_data(
+            pt: Point3D,
+            view_tag: str,
+            host: Dict[str, object],
+        ) -> Tuple[Dict[str, object], Point3D]:
+            host_key = (view_tag, str(host.get("host", "")))
+            ref_ids = member_nodes.get(host_key)
+            ref_seg = member_points.get(host_key)
+            if not ref_ids or not ref_seg:
+                raise ValueError(
+                    f"reference host {host_key[1]!r} is not available"
+                )
+
+            source_ratio = host.get("ratio")
+            values = _reference_node_values(
+                pt,
+                ref_ids,
+                list(ref_seg),
+                reference_ratio=(
+                    float(source_ratio) if source_ratio is not None else None
+                ),
+            )
+            axis_names = ("X", "Y", "Z")
+            real_axis = next(
+                idx for idx, axis_name in enumerate(axis_names)
+                if not isinstance(values[axis_name], str)
+            )
+            span = ref_seg[1][real_axis] - ref_seg[0][real_axis]
+            ratio = (
+                float(values[axis_names[real_axis]]) - ref_seg[0][real_axis]
+            ) / span
+            resolved_pt = tuple(
+                ref_seg[0][idx] + ratio * (ref_seg[1][idx] - ref_seg[0][idx])
+                for idx in range(3)
+            )
+            return values, resolved_pt
+
         def _register_node(
             node_id: str,
             pt: Point3D,
@@ -1902,6 +1983,7 @@ def generate_outputs(final_coords_map: Dict[str, List[Point3D]], all_models_data
         ) -> None:
             tier = _tier_for(view_tag, str(member_id))
             host = _host_for_endpoint(view_tag, str(member_id), endpoint_index)
+            resolved_pt = pt
             if force_real or tier == "tier1" or not host:
                 jiedian.append({
                     "node_id": node_id,
@@ -1912,15 +1994,7 @@ def generate_outputs(final_coords_map: Dict[str, List[Point3D]], all_models_data
                     "symmetry_type": 4,
                 })
             else:
-                host_key = (view_tag, str(host.get("host", "")))
-                ref_ids = member_nodes.get(host_key)
-                ref_seg = member_points.get(host_key)
-                if not ref_ids or not ref_seg:
-                    raise ValueError(
-                        f"member {view_tag}_{member_id} references host "
-                        f"{host_key[1]!r} before that host is available"
-                    )
-                values = _reference_node_values(pt, ref_ids, list(ref_seg))
+                values, resolved_pt = _reference_node_data(pt, view_tag, host)
                 jiedian.append({
                     "node_id": node_id,
                     "node_type": 12,
@@ -1930,10 +2004,10 @@ def generate_outputs(final_coords_map: Dict[str, List[Point3D]], all_models_data
                     "symmetry_type": 4,
                 })
 
-            known_nodes[node_id] = pt
-            known_nodes[_plus_suffix(node_id, +1)] = _sym_pt(pt, 1)
-            known_nodes[_plus_suffix(node_id, +2)] = _sym_pt(pt, 2)
-            known_nodes[_plus_suffix(node_id, +3)] = _sym_pt(pt, 3)
+            known_nodes[node_id] = resolved_pt
+            known_nodes[_plus_suffix(node_id, +1)] = _sym_pt(resolved_pt, 1)
+            known_nodes[_plus_suffix(node_id, +2)] = _sym_pt(resolved_pt, 2)
+            known_nodes[_plus_suffix(node_id, +3)] = _sym_pt(resolved_pt, 3)
 
         def _remember_member(
             view_tag: str,
@@ -1945,7 +2019,10 @@ def generate_outputs(final_coords_map: Dict[str, List[Point3D]], all_models_data
         ) -> None:
             member_key = (view_tag, str(member_id))
             member_nodes[member_key] = (str(node1_id), str(node2_id))
-            member_points[member_key] = (p1, p2)
+            member_points[member_key] = (
+                known_nodes.get(str(node1_id), p1),
+                known_nodes.get(str(node2_id), p2),
+            )
 
         base_sid = None
         min_cx = None
@@ -2117,12 +2194,31 @@ def generate_outputs(final_coords_map: Dict[str, List[Point3D]], all_models_data
             endpoint_index: int,
             excluded_ids: Optional[Set[str]] = None,
         ) -> str:
+            host = _host_for_endpoint(view_tag, str(member_id), endpoint_index)
+            match_point = pt
+            if host:
+                try:
+                    _, match_point = _reference_node_data(pt, view_tag, host)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"member {view_tag}_{member_id} endpoint {endpoint_index} "
+                        f"cannot reference {host.get('host')}: {exc}"
+                    ) from exc
             reuse_id = _closest_id(
-                pt,
+                match_point,
                 known_nodes,
                 eps=EPS,
                 excluded_ids=excluded_ids,
             )
+            if reuse_id and host:
+                host_key = (view_tag, str(host.get("host", "")))
+                host_seg = member_points.get(host_key)
+                candidate_point = known_nodes[reuse_id]
+                if (
+                    not host_seg
+                    or _point_to_segment_distance3(candidate_point, host_seg[0], host_seg[1]) > 1e-3
+                ):
+                    reuse_id = ""
             if reuse_id:
                 return reuse_id
             node_id = preferred_id
