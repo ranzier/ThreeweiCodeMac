@@ -1,17 +1,16 @@
 """
-「上字型」担架拼接点识别（T7833、781、7837）。
+「上/干字型」担架拼接点识别（T7833、781、7837）。
 
 拼接点这样识别：
 1. 根据正视图两根一类杆件的展开/收拢关系确定塔身连接侧，再按连接端Y确定上下杆；
 2. 到塔身正视图的**横杆**里找相同二维坐标的端点，拿到该横杆的塔身 member_id；
-3. 取该横杆 ganjian 行的 +x 右侧节点（node2）作为拼接点 node_id，其三维坐标从塔身 jiedian 取
-   （node2 直接查；查不到则用其 -x 镜像 node1 的坐标、x 取负）。
+3. 取该横杆 ganjian 行的 -x 左侧节点（node1）和 +x 右侧节点（node2）作为两侧拼接点，
+   三维坐标优先从塔身 jiedian 取；任意一侧缺少数值坐标时，由另一侧镜像补齐。
 
 只依赖塔身返回的 jiedian + ganjian，不需要塔身重建内部的 final_coords_map。
 
 产出的 pinjie 直接喂给 xintrans.trans 消费：每 4 个一组对应一个担架，
-组内顺序 [右上, 右下, 左上, 左下]（右侧 x>=0 进 positive_group，左侧 x<0 进 negative_group 被丢弃）。
-左侧为右侧镜像（node_id 复用右侧、坐标 x 取负）。
+组内顺序 [右上, 右下, 左上, 左下]，左右两组均携带各自真实的塔身节点编号。
 """
 
 import os
@@ -128,9 +127,9 @@ def build_stretcher_tower_pinjie(danjia_dir, tashen_dir, jiedian_tashen, ganjian
 
     识别规则：
       两根一类杆件展开较宽的一侧为塔身连接侧；连接端Y较小者为上杆、较大者为下杆。
-      两个连接端点 -> 塔身正视图**横杆**上的重合端点 -> 取该横杆 +x 右侧 ganjian 节点(node2)。
-      三维坐标：node2 直接查 jiedian；查不到则用其 -x 镜像 node1 的坐标、x 取负（横杆左右对称）。
-      左侧 negative_group 为右侧镜像（node_id 复用、x 取负，会被 xintrans 丢弃）。
+      两个连接端点 -> 塔身正视图**横杆**上的重合端点 -> 分别取该横杆 -x 左侧节点(node1)
+      和 +x 右侧节点(node2)。
+      三维坐标优先直接查 jiedian；任意一侧查不到时，用另一侧坐标关于 X=0 镜像补齐。
 
     参数:
         danjia_dir: 担架坐标目录（含 0{i}.txt）
@@ -155,19 +154,24 @@ def build_stretcher_tower_pinjie(danjia_dir, tashen_dir, jiedian_tashen, ganjian
     node_xyz = {str(n.get("node_id")): (n.get("X"), n.get("Y"), n.get("Z")) for n in jiedian_tashen}
 
     def endpoint(pt2d):
-        """担架某连接端二维坐标 -> (塔身+x节点编号, +x端三维坐标)。"""
+        """担架某连接端二维坐标 -> 左、右两侧各自的塔身节点编号与三维坐标。"""
         mid, _idx = _match_tashen_horizontal(pt2d, tashen_fronts, tol)
         left_node, right_node = _right_nodes_of_member(mid, ganjian_rows_by_base)
-        if right_node is None:
-            raise KeyError(f"塔身横杆 {mid} 在 ganjian 中无对应节点")
-        # +x 端坐标：优先直接查 node2；查不到用 -x 镜像 node1 坐标、x 取负
-        xyz = _node_xyz_from_jiedian(right_node, node_xyz)
-        if xyz is None:
-            mir = _node_xyz_from_jiedian(left_node, node_xyz)
-            if mir is None:
-                raise KeyError(f"横杆 {mid} 的节点 {right_node}/{left_node} 均无数值坐标")
-            xyz = [-mir[0], mir[1], mir[2]]  # 镜像到 +x
-        return right_node, [abs(xyz[0]), xyz[1], xyz[2]]
+        if left_node is None or right_node is None:
+            raise KeyError(f"塔身横杆 {mid} 在 ganjian 中缺少左右端节点")
+
+        left_xyz = _node_xyz_from_jiedian(left_node, node_xyz)
+        right_xyz = _node_xyz_from_jiedian(right_node, node_xyz)
+        if left_xyz is None and right_xyz is None:
+            raise KeyError(f"横杆 {mid} 的节点 {left_node}/{right_node} 均无数值坐标")
+        if left_xyz is None:
+            left_xyz = [-abs(right_xyz[0]), right_xyz[1], right_xyz[2]]
+        if right_xyz is None:
+            right_xyz = [abs(left_xyz[0]), left_xyz[1], left_xyz[2]]
+
+        left_xyz = [-abs(left_xyz[0]), left_xyz[1], left_xyz[2]]
+        right_xyz = [abs(right_xyz[0]), right_xyz[1], right_xyz[2]]
+        return left_node, left_xyz, right_node, right_xyz
 
     danjia_txts = sorted(glob.glob(os.path.join(danjia_dir, "*.txt")))
     pinjie = []
@@ -183,21 +187,15 @@ def build_stretcher_tower_pinjie(danjia_dir, tashen_dir, jiedian_tashen, ganjian
         up2d, _ = _pick_end(front, up_id, side)
         down2d, _ = _pick_end(front, down_id, side)
 
-        u_node, u_xyz = endpoint(up2d)
-        d_node, d_xyz = endpoint(down2d)
-
-        # 右侧（x>=0）真实值，左侧（x<0）为右侧镜像（node_id 复用、x 取负）
-        rx_u = [abs(u_xyz[0]), u_xyz[1], u_xyz[2]]
-        rx_d = [abs(d_xyz[0]), d_xyz[1], d_xyz[2]]
-        lx_u = [-abs(u_xyz[0]), u_xyz[1], u_xyz[2]]
-        lx_d = [-abs(d_xyz[0]), d_xyz[1], d_xyz[2]]
+        lu_node, lx_u, ru_node, rx_u = endpoint(up2d)
+        ld_node, lx_d, rd_node, rx_d = endpoint(down2d)
 
         # 组内顺序：右上, 右下, 左上, 左下
         pinjie += [
-            [u_node, rx_u],
-            [d_node, rx_d],
-            [u_node, lx_u],
-            [d_node, lx_d],
+            [ru_node, rx_u],
+            [rd_node, rx_d],
+            [lu_node, lx_u],
+            [ld_node, lx_d],
         ]
 
     return pinjie

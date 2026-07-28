@@ -662,8 +662,11 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         pj.append(negative_group)
 
     # ===== 担架索引修正 =====
-    if drawing_type in ("ShangZi", "GanZi"):
+    if drawing_type == "ShangZi":
         pj = [pj[i] for i in (0, 2)]
+    elif drawing_type == "GanZi":
+        # 7837/01 位于塔身左侧，7837/02 位于塔身右侧。
+        pj = [pj[i] for i in (1, 2)]
     # J1,Z1
     elif drawing_type == "GuLou" and count_txt_files(os.path.dirname(file_path)) == 4:
         pj = [pj[i] for i in (0, 2, 4, 6)]
@@ -1188,10 +1191,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         real_101 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_101, newx, pj, rod_front_a, 1, 0)
         real_103 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_103, newx, pj, rod_front_b, 0, 1)
 
-        if drawing_type == "GanZi" and drawing_id == 1:
-            left_3d_id = f"{jiandian_id + 20}"  # 7837/01 正视图尖点在左端收拢点
-            right_3d_id = pj[drawing_id - 1][0][0]  # 与塔身相交端点
-        elif (pj[drawing_id - 1][1][1][0] > 0):
+        if (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][0][0]  # 301 与塔身相交端点
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1200,10 +1200,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
 
         real_101 = mark_endpoint_for_real_points(real_101, coordinatesFront_data, rod_front_a, left_3d_id, right_3d_id,yuzhi)
 
-        if drawing_type == "GanZi" and drawing_id == 1:
-            left_3d_id = f"{jiandian_id + 20}"  # 7837/01 正视图尖点在左端收拢点
-            right_3d_id = pj[drawing_id - 1][1][0]  # 与塔身相交端点
-        elif (pj[drawing_id - 1][1][1][0] > 0):
+        if (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1294,10 +1291,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         real_102 = get_real_x_of_jiaodian(coordinatesOverhead_data, drawing_id, jiaodian_102, newx, pj, rod_102_id, 1,0)
 
 
-        if drawing_type == "GanZi" and drawing_id == 1:
-            left_3d_id = f"{jiandian_id + 20}"  # 7837/01 顶视图尖点在左端收拢点
-            right_3d_id = pj[drawing_id - 1][0][0]  # 与塔身相交端点
-        elif (pj[drawing_id - 1][1][1][0] > 0):
+        if (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][0][0]  # 301 与塔身相交端点
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1306,10 +1300,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
 
         real_101 = mark_endpoint_for_real_points(real_101, coordinatesOverhead_data, rod_101_id, left_3d_id, right_3d_id,yuzhi)
 
-        if drawing_type == "GanZi" and drawing_id == 1:
-            left_3d_id = f"{jiandian_id + 22}"  # 7837/01 顶视图尖点在左端收拢点
-            right_3d_id = str(int(pj[drawing_id - 1][0][0]) + 2)
-        elif (pj[drawing_id - 1][1][1][0] > 0):
+        if (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = str(int(pj[drawing_id - 1][0][0]) + 2)
             right_3d_id = f"{jiandian_id + 22}"  # 尖点
         else:
@@ -1389,10 +1380,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         real_103 = get_real_x_of_jiaodian(coordinatesBottom_data, drawing_id, jiaodian_103, newx, pj, rod_103_id,1,0)
         real_104 = get_real_x_of_jiaodian(coordinatesBottom_data, drawing_id, jiaodian_104, newx, pj, rod_104_id, 1,0)
 
-        if drawing_type == "GanZi" and drawing_id == 1:
-            left_3d_id = f"{jiandian_id + 20}"  # 7837/01 底视图尖点在左端收拢点
-            right_3d_id = pj[drawing_id - 1][1][0]  # 与塔身相交端点
-        elif (pj[drawing_id - 1][1][1][0] > 0):
+        if (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1400,10 +1388,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
             right_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点
         real_103 = mark_endpoint_for_real_points(real_103,coordinatesBottom_data,rod_103_id,left_3d_id,right_3d_id,yuzhi)
 
-        if drawing_type == "GanZi" and drawing_id == 1:
-            left_3d_id = f"{jiandian_id + 22}"  # 7837/01 底视图尖点在左端收拢点
-            right_3d_id = str(int(pj[drawing_id - 1][1][0]) + 2)
-        elif (pj[drawing_id - 1][1][1][0] > 0):
+        if (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = str(int(pj[drawing_id - 1][1][0]) + 2)
             right_3d_id = f"{jiandian_id + 22}"
         else:
