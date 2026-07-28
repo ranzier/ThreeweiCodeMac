@@ -128,18 +128,9 @@ def tran2dto3d(danjia_dir,tashen_dir,project_path,savepath_ui,drawing_type):
 
     ganjian_tashen, jiedian_tashen, pinjie_tashen = tower_body_reconstruction.build_tower_body(tashen_dir)
 
-    # T7833/781/7837 根据担架正视图几何关系识别连接侧和上下杆，
-    # 再用连接端点匹配塔身正视图横杆。仅这三类图纸替换 pinjie。
-    if drawing_type == "T7833":
-        pinjie_tashen = stretcher_tower_connection.build_stretcher_tower_pinjie(
-            danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen
-        )
-    elif drawing_type == "781":
-        pinjie_tashen = stretcher_tower_connection.build_stretcher_tower_pinjie(
-            danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen,
-            longest_main_rods=True
-        )
-    elif drawing_type == "7837":
+    # ShangZi/GanZi 型根据担架正视图几何关系识别连接侧和上下杆，
+    # 再用连接端点匹配塔身正视图横杆。
+    if drawing_type in ("ShangZi", "GanZi"):
         pinjie_tashen = stretcher_tower_connection.build_stretcher_tower_pinjie(
             danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen
         )

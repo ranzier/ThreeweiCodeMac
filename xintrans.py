@@ -536,11 +536,8 @@ def find_missing_members(ganjian, coordinates_data, main_rod_ids):
     return missing_members, existing_member_ids
 
 
-def detect_main_rods_for_781(coordinates_data, top_k=2):
-    """
-    781 的一类杆件编号含下划线，exec 后会变成 1051/1071 这类整数。
-    现有检测会因“编号最小”规则回退到短杆；781 只按长度取最长两根。
-    """
+def detect_longest_main_rods(coordinates_data, top_k=2):
+    """按杆件长度识别最长的一类杆件。"""
     rods = []
     for rod_id, points in (coordinates_data or {}).items():
         if len(points) != 2:
@@ -552,8 +549,8 @@ def detect_main_rods_for_781(coordinates_data, top_k=2):
 
 
 def detect_main_rods_by_type(coordinates_data, drawing_type):
-    if drawing_type == "781":
-        return detect_main_rods_for_781(coordinates_data)
+    if drawing_type == "ShangZi":
+        return detect_longest_main_rods(coordinates_data)
     return detect_main_rods_enhanced(coordinates_data)
 
 
@@ -609,6 +606,20 @@ def is_diagonal_rod_above_horizontal_rod(coordinates_data, rod_a_id, rod_b_id):
     return diagonal_y < horizontal_y
 
 
+def is_first_stretcher_apex_on_left(file_path, drawing_type):
+    """判断 01 号担架的尖点是否位于两根一类杆件左端。从而区分J1和J3J4"""
+    first_file_path = os.path.join(os.path.dirname(file_path), "01.txt")
+    with open(first_file_path, 'r', encoding='utf-8') as f:
+        first_content = f.read()
+    first_namespace = {}
+    exec(first_content, first_namespace)
+    first_front = first_namespace.get('coordinatesFront_data', {})
+    first_front_a, first_front_b = detect_main_rods_by_type(first_front, drawing_type)
+    first_left_a = min(first_front[first_front_a], key=lambda point: point[0])
+    first_left_b = min(first_front[first_front_b], key=lambda point: point[0])
+    return dist_points(first_left_a, first_left_b) <= 1
+
+
 
 
 
@@ -651,13 +662,15 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         pj.append(negative_group)
 
     # ===== 担架索引修正 =====
-    if drawing_type in ("J1", "Z1"):
-        # 原 pj 是 8 个担架，这里只取 0,2,4,6 对应的
+    if drawing_type in ("ShangZi", "GanZi"):
+        pj = [pj[i] for i in (0, 2)]
+    # J1,Z1
+    elif drawing_type == "GuLou" and count_txt_files(os.path.dirname(file_path)) == 4:
         pj = [pj[i] for i in (0, 2, 4, 6)]
-    elif drawing_type in ("J3", "J4"):
-        pj = [pj[i] for i in (1, 0, 3, 2, 5, 4, 7, 6)]
-    elif drawing_type in ("T7833", "781","7837"):
-        pj = [pj[i] for i in (0,2)]
+    # J3,J4
+    elif drawing_type == "GuLou" and count_txt_files(os.path.dirname(file_path)) == 8:
+        if is_first_stretcher_apex_on_left(file_path, drawing_type):
+            pj = [pj[i] for i in (1, 0, 3, 2, 5, 4, 7, 6)]
 
 
     # 担架编号偏移：担架和塔身合并的图纸（如 T7833/7837，塔身目录下存在 01.txt）担架从 3 号起，
@@ -665,7 +678,9 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
     id_prefix = drawing_id + 2 if id_offset else drawing_id
     jiandian_id = (id_prefix * 100 + 1) * 100
 
-    if drawing_type == "7837":
+
+    # 7837 干字型图纸最终生成的节点编号，担架和塔身的编号有重复的，导致冲突
+    if drawing_type == "GanZi":
         jiandian_id = (id_prefix * 100 + 1) * 100 + 70
 
     rod_front_a, rod_front_b = detect_main_rods_by_type(coordinatesFront_data, drawing_type)
@@ -1173,7 +1188,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         real_101 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_101, newx, pj, rod_front_a, 1, 0)
         real_103 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_103, newx, pj, rod_front_b, 0, 1)
 
-        if drawing_type == "7837" and drawing_id == 1:
+        if drawing_type == "GanZi" and drawing_id == 1:
             left_3d_id = f"{jiandian_id + 20}"  # 7837/01 正视图尖点在左端收拢点
             right_3d_id = pj[drawing_id - 1][0][0]  # 与塔身相交端点
         elif (pj[drawing_id - 1][1][1][0] > 0):
@@ -1185,7 +1200,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
 
         real_101 = mark_endpoint_for_real_points(real_101, coordinatesFront_data, rod_front_a, left_3d_id, right_3d_id,yuzhi)
 
-        if drawing_type == "7837" and drawing_id == 1:
+        if drawing_type == "GanZi" and drawing_id == 1:
             left_3d_id = f"{jiandian_id + 20}"  # 7837/01 正视图尖点在左端收拢点
             right_3d_id = pj[drawing_id - 1][1][0]  # 与塔身相交端点
         elif (pj[drawing_id - 1][1][1][0] > 0):
@@ -1279,7 +1294,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         real_102 = get_real_x_of_jiaodian(coordinatesOverhead_data, drawing_id, jiaodian_102, newx, pj, rod_102_id, 1,0)
 
 
-        if drawing_type == "7837" and drawing_id == 1:
+        if drawing_type == "GanZi" and drawing_id == 1:
             left_3d_id = f"{jiandian_id + 20}"  # 7837/01 顶视图尖点在左端收拢点
             right_3d_id = pj[drawing_id - 1][0][0]  # 与塔身相交端点
         elif (pj[drawing_id - 1][1][1][0] > 0):
@@ -1291,7 +1306,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
 
         real_101 = mark_endpoint_for_real_points(real_101, coordinatesOverhead_data, rod_101_id, left_3d_id, right_3d_id,yuzhi)
 
-        if drawing_type == "7837" and drawing_id == 1:
+        if drawing_type == "GanZi" and drawing_id == 1:
             left_3d_id = f"{jiandian_id + 22}"  # 7837/01 顶视图尖点在左端收拢点
             right_3d_id = str(int(pj[drawing_id - 1][0][0]) + 2)
         elif (pj[drawing_id - 1][1][1][0] > 0):
@@ -1374,7 +1389,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
         real_103 = get_real_x_of_jiaodian(coordinatesBottom_data, drawing_id, jiaodian_103, newx, pj, rod_103_id,1,0)
         real_104 = get_real_x_of_jiaodian(coordinatesBottom_data, drawing_id, jiaodian_104, newx, pj, rod_104_id, 1,0)
 
-        if drawing_type == "7837" and drawing_id == 1:
+        if drawing_type == "GanZi" and drawing_id == 1:
             left_3d_id = f"{jiandian_id + 20}"  # 7837/01 底视图尖点在左端收拢点
             right_3d_id = pj[drawing_id - 1][1][0]  # 与塔身相交端点
         elif (pj[drawing_id - 1][1][1][0] > 0):
@@ -1385,7 +1400,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
             right_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点
         real_103 = mark_endpoint_for_real_points(real_103,coordinatesBottom_data,rod_103_id,left_3d_id,right_3d_id,yuzhi)
 
-        if drawing_type == "7837" and drawing_id == 1:
+        if drawing_type == "GanZi" and drawing_id == 1:
             left_3d_id = f"{jiandian_id + 22}"  # 7837/01 底视图尖点在左端收拢点
             right_3d_id = str(int(pj[drawing_id - 1][1][0]) + 2)
         elif (pj[drawing_id - 1][1][1][0] > 0):
@@ -1586,8 +1601,8 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
 
 
 
-   #===== J1 担架对称性生成 =====
-    if drawing_type in ("J1", "Z1"):
+   #===== GuLou 型 4 个担架对称性生成 =====
+    if drawing_type == "GuLou" and count_txt_files(os.path.dirname(file_path)) == 4:
         for g in ganjian:
             if g.get("symmetry_type") == 2:
                 g["symmetry_type"] = 4
@@ -1597,8 +1612,8 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
             if j.get("symmetry_type") == 2:
                 j["symmetry_type"] = 4
 
- #===== T7833 担架对称性生成 =====
-    if drawing_type in ("T7833", "781") and drawing_id == 2:
+ #===== ShangZi 型担架对称性生成 =====
+    if drawing_type == "ShangZi" and drawing_id == 2:
         for g in ganjian[ganjian_start:]:
             if g.get("symmetry_type") == 2:
                 g["symmetry_type"] = 4
@@ -1610,8 +1625,8 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
 
 
 
-#===== 7837 担架对称性生成 =====
-    if drawing_type == "7837":
+#===== GanZi 型担架对称性生成 =====
+    if drawing_type == "GanZi":
         for g in ganjian:
             if g.get("symmetry_type") == 2:
                 g["symmetry_type"] = 4

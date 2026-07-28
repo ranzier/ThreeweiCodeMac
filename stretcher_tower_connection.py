@@ -173,7 +173,8 @@ def build_stretcher_tower_pinjie(danjia_dir, tashen_dir, jiedian_tashen, ganjian
     pinjie = []
     for txt in danjia_txts:
         front = _read_front(txt)
-        ids = _longest_main_rods(front) if longest_main_rods else detect_main_rods_enhanced(front)
+        use_longest_main_rods = longest_main_rods or any("_" in str(mid) for mid in front)
+        ids = _longest_main_rods(front) if use_longest_main_rods else detect_main_rods_enhanced(front)
         if len(ids) < 2:
             raise ValueError(f"担架 {os.path.basename(txt)} 正视图未识别到两个一类杆件")
         side, up_id, down_id = get_main_rod_connection_geometry(
