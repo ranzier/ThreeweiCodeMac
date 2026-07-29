@@ -34,8 +34,8 @@ def node_id_base(raw_id):
     return member_instance_id(raw_id).replace("_", "")
 
 # ================= 1. 先找一类杆件 =================
-def extract_lines01(lines_dict):
-    return extract_target_members(lines_dict)
+def extract_lines01(lines_dict, main_rod_ids=None):
+    return extract_target_members(lines_dict, main_rod_ids)
 # ================= 辅助：算真实坐标的投影仪 =================
 def build_projector(lines01):
     lines = list(lines01.values())
@@ -539,13 +539,29 @@ def single_view0201(
     debug_member_trace=False,
     front_only=True,
     keep_view_face=False,
+    main_rod_ids=None,
+    symmetry_axis=None,
 ):
     print("\n" + "=" * 50)
     print("====== 开始执行严格 6 步引用拓扑法（节点记录驱动版） ======")
 
-    lines01 = extract_lines01(line_coord)
-    if len(lines01) < 2:
+    real_lines01 = extract_lines01(line_coord, main_rod_ids)
+    if not real_lines01:
         return ([], [], []) if return_debug_nodes else ([], [])
+
+    lines01 = dict(real_lines01)
+    virtual_support_aliases = {}
+    if len(lines01) == 1:
+        if symmetry_axis is None:
+            return ([], [], []) if return_debug_nodes else ([], [])
+        real_id, real_segment = next(iter(lines01.items()))
+        virtual_id = f"__asym_mirror__{real_id}"
+        axis_x = float(symmetry_axis)
+        lines01[virtual_id] = [
+            (2.0 * axis_x - point[0], point[1])
+            for point in real_segment
+        ]
+        virtual_support_aliases[virtual_id] = str(real_id)
 
     proj_result = build_projector(lines01)
     if not proj_result:
@@ -703,7 +719,7 @@ def single_view0201(
     tier2_nodes_map = {}
     tier2_side_nodes_map = {}
 
-    for k, seg in lines01.items():
+    for k, seg in real_lines01.items():
         clean_k = clean_id(k)
         member_k = member_instance_id(k)
         node_ids = []
@@ -722,6 +738,38 @@ def single_view0201(
             node_ids.append(str(nid))
         tier1_nodes_map[member_k] = (node_ids[0], node_ids[1])
         add_member(member_k, 4, node_ids[0], node_ids[1], variant="tier1-main")
+
+    for virtual_id, real_id in virtual_support_aliases.items():
+        real_nodes = tier1_nodes_map.get(member_instance_id(real_id))
+        if not real_nodes:
+            continue
+        virtual_nodes = []
+        for real_node_id in real_nodes:
+            virtual_node_id = _replace_node_suffix(real_node_id, "1")
+            real_record = node_records.get(str(real_node_id))
+            if real_record is not None:
+                x_value, y_value, z_value = real_record.get(
+                    "_xyz",
+                    (real_record["X"], real_record["Y"], real_record["Z"]),
+                )
+                front_xy = real_record.get("_front_xy")
+                mirrored_front_xy = (
+                    (2.0 * float(symmetry_axis) - front_xy[0], front_xy[1])
+                    if front_xy is not None
+                    else None
+                )
+                add_node(
+                    virtual_node_id,
+                    11,
+                    4,
+                    -float(x_value),
+                    float(y_value),
+                    float(z_value),
+                    mirrored_front_xy,
+                    export=False,
+                )
+            virtual_nodes.append(virtual_node_id)
+        tier1_nodes_map[member_instance_id(virtual_id)] = tuple(virtual_nodes)
 
     unclassified = {k: v for k, v in line_coord.items() if k not in lines01}
     tolerance = 35.0

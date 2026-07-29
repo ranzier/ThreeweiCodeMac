@@ -78,12 +78,12 @@ def detect_main_rods_enhanced(coordinates_data, top_k=2):
     return sorted(result, key=_member_sort_key)
 
 
-def extract_target_members(lines_dict):
-    target_ids = detect_main_rods_enhanced(lines_dict)
+def extract_target_members(lines_dict, main_rod_ids=None):
+    target_ids = main_rod_ids or detect_main_rods_enhanced(lines_dict)
     return {member_id: lines_dict[member_id] for member_id in target_ids if member_id in lines_dict}
 
 # 一类杆件所需参数读取
-def parameter_extract(lines_dict):
+def parameter_extract(lines_dict, symmetry_axis=None):
     lines = list(lines_dict.values())
     # if len(lines) < 2:
     #     raise ValueError("提取一类杆件失败：需要至少两条杆件用于参数计算。")
@@ -95,7 +95,11 @@ def parameter_extract(lines_dict):
         line = lines[0]
         (x1, y1), (x2, y2) = line
         # 添加关于Y轴对称的杆件
-        symmetric_line = ((-x1, y1), (-x2, y2))
+        axis_x = float(symmetry_axis) if symmetry_axis is not None else 0.0
+        symmetric_line = (
+            (2.0 * axis_x - x1, y1),
+            (2.0 * axis_x - x2, y2),
+        )
         lines = [line, symmetric_line]
 
     kb_list = []
@@ -166,11 +170,15 @@ def single_view_trans01(lines_dict, h, a, b):
 
 
 # 一类杆件坐标总转换
-def translate_single_front_3d_coordinates01(lines_dict):
-    line_extracted = extract_target_members(lines_dict)
+def translate_single_front_3d_coordinates01(
+    lines_dict,
+    main_rod_ids=None,
+    symmetry_axis=None,
+):
+    line_extracted = extract_target_members(lines_dict, main_rod_ids)
     if not line_extracted:
         return {}
-    h, a, b = parameter_extract(line_extracted)
+    h, a, b = parameter_extract(line_extracted, symmetry_axis=symmetry_axis)
     return single_view_trans01(line_extracted, h, a, b)
 
 
@@ -212,8 +220,12 @@ def convert_node_format(original_data):
 
 # ================= 总函数 =================
 
-def single_view01(line_coord):
-    res_lines = translate_single_front_3d_coordinates01(line_coord)
+def single_view01(line_coord, main_rod_ids=None, symmetry_axis=None):
+    res_lines = translate_single_front_3d_coordinates01(
+        line_coord,
+        main_rod_ids,
+        symmetry_axis=symmetry_axis,
+    )
     ganjian = convert_member_format(res_lines)
     jiedian = convert_node_format(res_lines)
     return ganjian, jiedian
@@ -221,8 +233,12 @@ def single_view01(line_coord):
 
 # ====== 辅助接口：提供一类 3D 字典与顶端杆件两端点 ======
 
-def build_final_map_single_view(line_coord):
-    lines3d = translate_single_front_3d_coordinates01(line_coord)
+def build_final_map_single_view(line_coord, main_rod_ids=None, symmetry_axis=None):
+    lines3d = translate_single_front_3d_coordinates01(
+        line_coord,
+        main_rod_ids,
+        symmetry_axis=symmetry_axis,
+    )
     if not lines3d:
         return {}, None
     special_key = None
@@ -236,11 +252,15 @@ def build_final_map_single_view(line_coord):
     return {special_str: lines3d[special_key]}, special_str
 
 
-def extract_top_span_points_single(line_coord):
-    line_extracted = extract_target_members(line_coord)
+def extract_top_span_points_single(
+    line_coord,
+    main_rod_ids=None,
+    symmetry_axis=None,
+):
+    line_extracted = extract_target_members(line_coord, main_rod_ids)
     if not line_extracted:
         return None, None
-    h, a, b = parameter_extract(line_extracted)
+    h, a, b = parameter_extract(line_extracted, symmetry_axis=symmetry_axis)
     span_sq = max(h * h - ((b - a) / 2.0) * ((b - a) / 2.0), 0.0)
     z_top = round(math.sqrt(span_sq) / 1000.0, 6)
     half = round(b / 2.0 / 1000.0, 6)
