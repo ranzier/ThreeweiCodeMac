@@ -2,7 +2,7 @@ import math
 import os
 from collections import defaultdict
 from get_first_ganjian_id import detect_main_rods_enhanced
-from stretcher_geometry import get_main_rod_connection_geometry
+from stretcher_tower_connection import get_main_rod_connection_geometry
 
 
 def count_txt_files(folder_path):

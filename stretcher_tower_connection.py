@@ -19,8 +19,53 @@ import math
 import re
 
 from get_first_ganjian_id import detect_main_rods_enhanced
-from dual_view_core import _parse_block_dict
-from stretcher_geometry import get_main_rod_connection_geometry
+
+
+def _endpoint_on_side(segment, side):
+    """返回线段在指定左右侧的端点。"""
+    if not segment or len(segment) != 2:
+        raise ValueError("一类杆件必须包含两个二维端点")
+    selector = min if side == "left" else max
+    return selector(segment, key=lambda point: point[0])
+
+
+def get_main_rod_connection_geometry(coordinates_data, rod_a_id, rod_b_id):
+    """
+    根据正视图两根一类杆件确定塔身连接侧及上下杆。
+
+    两杆在展开侧的端点间距大，在收拢尖点侧的端点间距小，因此展开侧
+    就是连接塔身的一侧。图像坐标 Y 轴向下，连接端 Y 较小者为上杆。
+    """
+    try:
+        rod_a = coordinates_data[rod_a_id]
+        rod_b = coordinates_data[rod_b_id]
+    except KeyError as exc:
+        raise ValueError(f"正视图缺少一类杆件 {exc.args[0]}") from exc
+
+    endpoints = {
+        side: (
+            _endpoint_on_side(rod_a, side),
+            _endpoint_on_side(rod_b, side),
+        )
+        for side in ("left", "right")
+    }
+    gaps = {
+        side: math.dist(points[0], points[1])
+        for side, points in endpoints.items()
+    }
+    if math.isclose(gaps["left"], gaps["right"], rel_tol=1e-9, abs_tol=1e-9):
+        raise ValueError(
+            f"正视图一类杆件 {rod_a_id}、{rod_b_id} 无法区分连接侧和收拢侧"
+        )
+
+    connection_side = max(gaps, key=gaps.get)
+    upper_rod_id, lower_rod_id = sorted(
+        (rod_a_id, rod_b_id),
+        key=lambda rod_id: _endpoint_on_side(
+            coordinates_data[rod_id], connection_side
+        )[1],
+    )
+    return connection_side, upper_rod_id, lower_rod_id
 
 
 def _read_front(txt_path):
@@ -31,6 +76,9 @@ def _read_front(txt_path):
     txt 里形如 119_1 的 key 若用 exec 会被 Python 当成数字分隔符解析成整数 1191，
     与塔身 final_coords_map 保留的字符串 key（F_119_1）对不上。正则解析保持字符串 key 一致。
     """
+    # 延迟导入，避免只使用几何辅助函数的 xintrans 提前依赖 numpy 等塔身解析依赖。
+    from dual_view_core import _parse_block_dict
+
     with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
         text = f.read()
     return _parse_block_dict(text, "front")
@@ -122,7 +170,7 @@ def _node_xyz_from_jiedian(node_id, node_xyz):
 def build_stretcher_tower_pinjie(danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen, tol=1.0,
                                  longest_main_rods=False):
     """
-    为 T7833 构建 xintrans 消费格式的 pinjie（长度 = 担架数 × 4）。
+    为构建 xintrans 消费格式的 pinjie（长度 = 担架数 × 4）。
     每个元素形如 [node_id_str, [x, y, z]]。
 
     识别规则：
