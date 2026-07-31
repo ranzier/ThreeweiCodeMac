@@ -682,7 +682,7 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
     jiandian_id = (id_prefix * 100 + 1) * 100
 
 
-    # 7837 干字型图纸最终生成的节点编号，担架和塔身的编号有重复的，导致冲突
+    # 7837 干字型图纸最终生成的担架和塔身的节点编号有重复的，导致冲突，此处代码仅为了避免编号冲突
     if drawing_type == "GanZi":
         jiandian_id = (id_prefix * 100 + 1) * 100 + 70
 
