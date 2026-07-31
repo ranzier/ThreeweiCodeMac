@@ -16,6 +16,68 @@ def count_txt_files(folder_path):
 
     return sum(1 for name in entries if name.lower().endswith(".txt"))
 
+
+def list_stretcher_drawings(folder_path):
+    """Return ``(drawing_id, path)`` pairs for the actual drawing files.
+
+    Drawing IDs come from numeric file stems (for example ``01.txt`` -> 1).
+    They are sorted numerically, so missing IDs do not cause nonexistent files to
+    be opened.  Ambiguous duplicate IDs such as ``01.txt`` and ``1.txt`` are
+    rejected instead of being processed twice.
+    """
+    try:
+        entries = os.listdir(folder_path)
+    except FileNotFoundError:
+        return []
+
+    drawings = []
+    paths_by_id = {}
+    for name in entries:
+        if not name.lower().endswith(".txt"):
+            continue
+
+        stem = os.path.splitext(name)[0]
+        if not stem.isdigit():
+            raise ValueError(f"担架图纸文件名必须是数字编号: {name}")
+
+        drawing_id = int(stem)
+        if drawing_id <= 0:
+            raise ValueError(f"担架图纸编号必须大于 0: {name}")
+        if drawing_id in paths_by_id:
+            raise ValueError(
+                f"担架图纸编号重复: {paths_by_id[drawing_id]} 和 {name}"
+            )
+
+        full_path = os.path.join(folder_path, name)
+        paths_by_id[drawing_id] = name
+        drawings.append((drawing_id, full_path))
+
+    return sorted(drawings, key=lambda item: item[0])
+
+
+def align_connection_groups(pj, drawing_id, connection_index):
+    """Expose the current ordered connection group at its drawing-ID slot.
+
+    Most of the legacy conversion code addresses a connection group with
+    ``drawing_id - 1``.  For sparse file IDs, ``connection_index`` identifies
+    the corresponding group in the compact tower connection list.  A copy is
+    returned so other groups and callers' data are never mutated.
+    """
+    if connection_index is None or connection_index == drawing_id - 1:
+        return pj
+    if connection_index < 0 or connection_index >= len(pj):
+        raise IndexError(
+            f"图纸 {drawing_id:02d} 缺少对应的塔身拼接点: "
+            f"处理序号 {connection_index + 1}, 拼接点组数 {len(pj)}"
+        )
+
+    aligned = list(pj)
+    target_index = drawing_id - 1
+    if target_index >= len(aligned):
+        aligned.extend([None] * (target_index + 1 - len(aligned)))
+    aligned[target_index] = pj[connection_index]
+    return aligned
+
 def dist_points(p1, p2):
     """计算点之间距离"""
     x1, y1 = p1
@@ -626,16 +688,24 @@ def is_first_stretcher_apex_on_left(file_path, drawing_type):
 jiedian = []
 ganjian = []
 
-def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
+def trans(
+    file_path,
+    drawing_id,
+    data1,
+    drawing_type,
+    id_offset=False,
+    connection_index=None,
+):
     """
     参数:
         file_path: 包含三视图坐标数据的文件路径
-        drawing_id: 图纸序号
+        drawing_id: 从文件名取得的实际图纸编号，用于生成节点/杆件编号
+        connection_index: 当前图纸在排序后文件列表中的位置（从 0 开始），
+            用于读取按处理顺序排列的塔身拼接点；省略时保持旧的连续编号行为
     """
     # 记录本次担架处理前全局列表的长度，用于只对本担架新增的节点/杆件做后处理
     jiedian_start = len(jiedian)
     ganjian_start = len(ganjian)
-
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
     namespace = {}
@@ -674,6 +744,8 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
     elif drawing_type == "GuLou" and count_txt_files(os.path.dirname(file_path)) == 8:
         if is_first_stretcher_apex_on_left(file_path, drawing_type):
             pj = [pj[i] for i in (1, 0, 3, 2, 5, 4, 7, 6)]
+
+    pj = align_connection_groups(pj, drawing_id, connection_index)
 
 
     # 担架编号偏移：担架和塔身合并的图纸（如 T7833/7837，塔身目录下存在 01.txt）担架从 3 号起，
@@ -1622,18 +1694,21 @@ def trans(file_path, drawing_id, data1, drawing_type, id_offset=False):
                 j["symmetry_type"] = 4
 
 def work(file_path, data, drawing_type, tashen_dir=None):
-    txt_count = count_txt_files(file_path)
-
     # 担架和塔身合并的图纸（塔身目录下存在 01.txt，如 T7833/7837）担架编号需偏移 +2，
     # 避免担架与塔身的节点编号生成重复。
     id_offset = bool(tashen_dir) and os.path.exists(os.path.join(tashen_dir, "01.txt"))
 
-    for i in range(1, txt_count + 1):
-        #specific_file_path = f"{file_path}\\0{i}.txt"   # windows
-        specific_file_path = f"{file_path}/0{i}.txt"    # mac
-        trans(specific_file_path, i, data, drawing_type, id_offset)
-
-    # trans(f"{file_path}\\0{4}.txt", 4, data, drawing_type)
+    for connection_index, (drawing_id, drawing_path) in enumerate(
+        list_stretcher_drawings(file_path)
+    ):
+        trans(
+            drawing_path,
+            drawing_id,
+            data,
+            drawing_type,
+            id_offset,
+            connection_index,
+        )
 
 
     return jiedian, ganjian
