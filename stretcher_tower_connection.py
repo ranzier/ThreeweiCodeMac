@@ -16,7 +16,6 @@
 import os
 import glob
 import math
-import re
 
 from get_first_ganjian_id import detect_main_rods_enhanced
 
@@ -101,16 +100,6 @@ def _pick_end(front, mid, side):
     return _right_end(front, mid) if side == "right" else _left_end(front, mid)
 
 
-def _longest_main_rods(coordinates_data, top_k=2):
-    """781 特例：下划线杆件编号只按长度识别一类杆件。"""
-    rods = sorted(
-        coordinates_data,
-        key=lambda mid: math.dist(coordinates_data[mid][0], coordinates_data[mid][1]),
-        reverse=True,
-    )[:top_k]
-    return sorted(rods, key=lambda mid: tuple(map(int, re.findall(r"\d+", str(mid)))))
-
-
 def _base_id(k):
     """去掉 F_/R_ 前缀与 _1/_2 拼接后缀，得到基础 member_id。例：F_119_1 -> 119。"""
     k = str(k).replace("F_", "").replace("R_", "")
@@ -185,7 +174,7 @@ def build_stretcher_tower_pinjie(danjia_dir, tashen_dir, jiedian_tashen, ganjian
         jiedian_tashen: 塔身节点列表，用于取连接点三维坐标
         ganjian_tashen: 塔身杆件列表，用于把横杆映射回 +x 连接节点编号
         tol: 二维坐标匹配容差（原始坐标为整数，默认 1.0 兜底）
-        longest_main_rods: 781 特例，忽略编号规则，只取正视图最长的两根杆件。
+        longest_main_rods: 已弃用的兼容参数；一类杆件始终使用通用规则识别。
     """
     # 汇总塔身所有正视图杆件的二维坐标
     tashen_fronts = []
@@ -225,8 +214,7 @@ def build_stretcher_tower_pinjie(danjia_dir, tashen_dir, jiedian_tashen, ganjian
     pinjie = []
     for txt in danjia_txts:
         front = _read_front(txt)
-        use_longest_main_rods = longest_main_rods or any("_" in str(mid) for mid in front)
-        ids = _longest_main_rods(front) if use_longest_main_rods else detect_main_rods_enhanced(front)
+        ids = detect_main_rods_enhanced(front)
         if len(ids) < 2:
             raise ValueError(f"担架 {os.path.basename(txt)} 正视图未识别到两个一类杆件")
         side, up_id, down_id = get_main_rod_connection_geometry(

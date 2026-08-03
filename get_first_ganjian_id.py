@@ -9,6 +9,20 @@ def segment_length(p1, p2):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 
+def rod_id_validation_key(rod_id):
+    """按三位主体编号和可选后缀排序，不改变原始杆件编号。"""
+    text = str(rod_id).strip()
+    body, separator, suffix = text.partition('_')
+    if separator and body.isdigit() and suffix.isdigit():
+        return int(body), int(suffix)
+    if text.isdigit():
+        # Python 会把坐标文件中的 103_1 解析成整数 1031。
+        if len(text) > 3:
+            return int(text[:3]), int(text[3:])
+        return int(text), 0
+    return float('inf'), float('inf')
+
+
 # ===============================
 # 2. 增强版一类杆件检测（长度 + 编号验证）
 # ===============================
@@ -28,11 +42,8 @@ def detect_main_rods_enhanced(coordinates_data, top_k=2):
     all_ids = []
 
     for rod_id in coordinates_data.keys():
-        # 统一处理编号（字符串或数字）
-        try:
-            num_id = int(rod_id)
-        except (ValueError, TypeError):
-            num_id = float('inf')  # 非数字编号排最后
+        # 主体编号不超过三位；兼容 103_1 经 exec 读取后变成 1031。
+        num_id = rod_id_validation_key(rod_id)
         all_ids.append((rod_id, num_id))
 
         p1, p2 = coordinates_data[rod_id]

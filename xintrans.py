@@ -598,21 +598,8 @@ def find_missing_members(ganjian, coordinates_data, main_rod_ids):
     return missing_members, existing_member_ids
 
 
-def detect_longest_main_rods(coordinates_data, top_k=2):
-    """按杆件长度识别最长的一类杆件。"""
-    rods = []
-    for rod_id, points in (coordinates_data or {}).items():
-        if len(points) != 2:
-            continue
-        rods.append((rod_id, dist_points(points[0], points[1])))
-    rods.sort(key=lambda item: item[1], reverse=True)
-    result = [rod_id for rod_id, _length in rods[:top_k]]
-    return sorted(result, key=lambda x: int(x) if str(x).isdigit() else str(x))
-
-
 def detect_main_rods_by_type(coordinates_data, drawing_type):
-    if drawing_type == "ShangZi":
-        return detect_longest_main_rods(coordinates_data)
+    """统一使用通用规则识别一类杆件；保留 drawing_type 参数以兼容现有调用。"""
     return detect_main_rods_enhanced(coordinates_data)
 
 
