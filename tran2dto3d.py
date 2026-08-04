@@ -4,6 +4,8 @@ import stretcher_tower_connection
 import pandas as pd
 import os
 
+MAX_NORMALIZED_NODE_ID = 1000
+
 def normalize_node_ids(nodes, members):
     # 步骤1：收集所有现有节点标识（去掉最后一位）
     used_ids = set()
@@ -16,16 +18,16 @@ def normalize_node_ids(nodes, members):
     nodes_to_modify = []
     id_mapping = {}  # 旧标识 -> 新标识的映射
     
-    # 找出不在1-500范围内或重复的标识
+    # 找出不在允许范围内或重复的标识
     for node in nodes:
         node_id = node['node_id']
         prefix = node_id[:-1]
         suffix = node_id[-1]
         
-        # 检查是否是数字且在1-500范围内
+        # 检查是否是数字且在允许范围内
         try:
             num = int(prefix)
-            if 1 <= num <= 500 and prefix not in used_ids:
+            if 1 <= num <= MAX_NORMALIZED_NODE_ID and prefix not in used_ids:
                 used_ids.add(prefix)  # 标记为已使用
                 continue
         except ValueError:
@@ -34,8 +36,10 @@ def normalize_node_ids(nodes, members):
         # 需要修改的节点
         nodes_to_modify.append((node, prefix, suffix))
     
-    # 步骤3：生成新的标识（1-500范围内未使用的）
-    available_ids = set(str(i) for i in range(1, 501)) - used_ids
+    # 步骤3：生成新的标识（允许范围内未使用的）
+    available_ids = (
+        set(str(i) for i in range(1, MAX_NORMALIZED_NODE_ID + 1)) - used_ids
+    )
     available_ids = sorted(available_ids, key=lambda x: int(x))
     
     # 步骤4：创建映射关系
@@ -44,7 +48,9 @@ def normalize_node_ids(nodes, members):
             new_prefix = id_mapping[old_prefix]
         else:
             if not available_ids:
-                raise ValueError("1-500范围内的可用ID已用完")
+                raise ValueError(
+                    f"1-{MAX_NORMALIZED_NODE_ID}范围内的可用ID已用完"
+                )
             new_prefix = available_ids.pop(0)
             id_mapping[old_prefix] = new_prefix
         
