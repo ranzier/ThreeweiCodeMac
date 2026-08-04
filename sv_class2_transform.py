@@ -902,6 +902,40 @@ def single_view0201(
     tier3_nodes_map = {}
     tier3_side_nodes_map = {}
     pending = dict(unclassified)
+    shared_point_tol = max(3.0, tolerance * 0.1)
+    shared_clusters = []
+    shared_endpoint_keys = {}
+    for member_id, seg in pending.items():
+        for endpoint_index, pt in enumerate(seg):
+            matched_index = None
+            for cluster_index, cluster in enumerate(shared_clusters):
+                cx, cy = cluster["centroid"]
+                if math.hypot(pt[0] - cx, pt[1] - cy) <= shared_point_tol:
+                    matched_index = cluster_index
+                    break
+            if matched_index is None:
+                shared_clusters.append({
+                    "centroid": (float(pt[0]), float(pt[1])),
+                    "items": [],
+                })
+                matched_index = len(shared_clusters) - 1
+
+            cluster = shared_clusters[matched_index]
+            cluster["items"].append((member_id, endpoint_index, pt))
+            count = len(cluster["items"])
+            cx, cy = cluster["centroid"]
+            cluster["centroid"] = (
+                (cx * (count - 1) + float(pt[0])) / count,
+                (cy * (count - 1) + float(pt[1])) / count,
+            )
+            shared_endpoint_keys[(member_id, endpoint_index)] = matched_index
+
+    shared_cluster_keys = {
+        cluster_index
+        for cluster_index, cluster in enumerate(shared_clusters)
+        if len({item[0] for item in cluster["items"]}) >= 2
+    }
+    shared_node_map = {}
 
     def resolve_host(pt):
         host_key = find_host(pt, lines01)
@@ -915,13 +949,48 @@ def single_view0201(
             return "tier3", member_instance_id(host_key)
         return None, None
 
+    def shared_key_for(member_id, endpoint_index):
+        cluster_key = shared_endpoint_keys.get((member_id, endpoint_index))
+        if cluster_key in shared_cluster_keys:
+            return cluster_key
+        return None
+
+    def get_or_create_shared_node(cluster_key, member_id, pt):
+        if cluster_key in shared_node_map:
+            return shared_node_map[cluster_key]
+
+        nid = get_safe_nid(node_id_base(member_id))
+        x3d, y3d, z3d = projector(pt[0], pt[1])
+        add_node(nid, 11, 4, x3d, y3d, z3d, pt, export=True)
+        shared_node_map[cluster_key] = str(nid)
+        return str(nid)
+
     while pending:
         resolved_count = 0
         for k, seg in list(pending.items()):
             endpoint_hosts = [resolve_host(pt) for pt in seg]
-            if not all(host_key for _, host_key in endpoint_hosts):
+            endpoint_shared_keys = [
+                shared_key_for(k, endpoint_index)
+                for endpoint_index, _ in enumerate(seg)
+            ]
+            endpoint_ready = []
+            for (_, host_key), shared_key in zip(endpoint_hosts, endpoint_shared_keys):
+                endpoint_ready.append(
+                    bool(host_key)
+                    or shared_key in shared_node_map
+                    or shared_key is not None
+                )
+
+            if not all(endpoint_ready):
                 continue
-            if all(host_kind == "tier1" for host_kind, _ in endpoint_hosts):
+
+            has_host = any(host_key for _, host_key in endpoint_hosts)
+            has_existing_shared = any(
+                shared_key in shared_node_map
+                for shared_key in endpoint_shared_keys
+                if shared_key is not None
+            )
+            if not has_host and not has_existing_shared:
                 continue
 
             clean_k = clean_id(k)
@@ -930,31 +999,37 @@ def single_view0201(
             endpoint_infos = []
             print(f"\n=== [处理三类杆件] {clean_k} ===")
 
-            for pt, (host_kind, host_key) in zip(seg, endpoint_hosts):
-                nid = get_safe_nid(node_id_base(k))
-                _, _, z3d = projector(pt[0], pt[1])
-                if host_kind == "tier1":
-                    host_nodes_map = tier1_nodes_map
-                    host_members = lines01
-                elif host_kind == "tier2":
-                    host_nodes_map = tier2_nodes_map
-                    host_members = tier2_members
-                else:
-                    host_nodes_map = tier3_nodes_map
-                    host_members = tier3_members
+            for endpoint_index, (pt, (host_kind, host_key)) in enumerate(zip(seg, endpoint_hosts)):
                 x3d, _, z3d = projector(pt[0], pt[1])
-                node_x, node_y, node_z = _tier3_host_node_values(
-                    host_key, host_nodes_map, host_members, x3d, z3d
-                )
-                add_node(nid, 12, 4, node_x, node_y, node_z, pt, export=True)
+                shared_key = endpoint_shared_keys[endpoint_index]
+                if host_key:
+                    nid = get_safe_nid(node_id_base(k))
+                    if host_kind == "tier1":
+                        host_nodes_map = tier1_nodes_map
+                        host_members = lines01
+                    elif host_kind == "tier2":
+                        host_nodes_map = tier2_nodes_map
+                        host_members = tier2_members
+                    else:
+                        host_nodes_map = tier3_nodes_map
+                        host_members = tier3_members
+                    node_x, node_y, node_z = _tier3_host_node_values(
+                        host_key, host_nodes_map, host_members, x3d, z3d
+                    )
+                    add_node(nid, 12, 4, node_x, node_y, node_z, pt, export=True)
+                    node_id = str(nid)
+                else:
+                    node_id = get_or_create_shared_node(shared_key, k, pt)
+                    host_kind = "shared"
+                    host_key = None
                 endpoint_infos.append({
-                    "node_id": str(nid),
+                    "node_id": str(node_id),
                     "host_kind": host_kind,
                     "host_key": host_key,
                     "z": z3d,
                     "front_xy": pt,
                 })
-                node_ids.append(str(nid))
+                node_ids.append(str(node_id))
 
             tier3_members[k] = seg
             tier3_nodes_map[member_k] = (node_ids[0], node_ids[1])

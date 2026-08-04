@@ -321,7 +321,7 @@ def calc_jiandian_xyz(coordinates_data, drawing_id, pj,pj_view_index, rod_a_id, 
         base_half, apex_half = a2, a1
     bili = shiji / base_half  # 计算实际值/像素值的比例
     # 生成尖点
-    if (pj[drawing_id - 1][pj_view_index][1][0] > 0):  # if里面生成右边担架的尖点
+    if (pj[drawing_id - 1][pj_view_index][1][0] >= 0):  # if里面生成右边担架的尖点
         newx = pj[drawing_id - 1][pj_view_index][1][0] + h * bili
         newy = -apex_half * bili
         newz = pj[drawing_id - 1][pj_view_index][1][2]
@@ -478,7 +478,7 @@ def get_real_x_of_jiaodian(coordinates_data, drawing_id, filtered, newx, pj, rod
     max_2d_x = coordinates_data[rod_id][1][0]
 
     # 得到301 杆件在三维中的两端的 X 坐标
-    if (pj[drawing_id - 1][judge_pj_index][1][0] > 0):
+    if (pj[drawing_id - 1][judge_pj_index][1][0] >= 0):
         min_3d_x = pj[drawing_id - 1][value_pj_index][1][0]  # 这个是301杆件与塔身相交的端点的三维X坐标
         max_3d_x = newx  # 这个是301杆件尖点的三维X坐标
     else:
@@ -655,6 +655,57 @@ def is_diagonal_rod_above_horizontal_rod(coordinates_data, rod_a_id, rod_b_id):
     return diagonal_y < horizontal_y
 
 
+def calc_yangjiao_01_apex_z(
+    coordinates_front_data,
+    connection_group,
+    rod_a_id,
+    rod_b_id,
+):
+    """根据正视图倾角计算羊角形 01 号担架尖点的真实 Z。
+
+    connection_group 按通用流程约定为 [上连接点, 下连接点]。先用两个
+    连接端在正视图中的像素 Y 与对应三维 Z 标定比例，再把两根主杆
+    对侧端点的平均 Y 外推为尖点 Z。
+    """
+    if not connection_group or len(connection_group) < 2:
+        raise ValueError("羊角形 01 号担架缺少上下连接点，无法计算尖点 Z")
+
+    try:
+        upper_xyz = connection_group[0][1]
+        lower_xyz = connection_group[1][1]
+        upper_z = float(upper_xyz[2])
+        lower_z = float(lower_xyz[2])
+    except (IndexError, TypeError, ValueError) as exc:
+        raise ValueError("羊角形 01 号担架上下连接点坐标无效") from exc
+
+    connection_side, upper_rod_id, lower_rod_id = get_main_rod_connection_geometry(
+        coordinates_front_data,
+        rod_a_id,
+        rod_b_id,
+    )
+
+    def endpoint_on_side(rod_id, side):
+        points = coordinates_front_data.get(rod_id)
+        if not points or len(points) != 2:
+            raise ValueError(f"羊角形 01 号正视图一类杆件 {rod_id} 端点无效")
+        selector = min if side == "left" else max
+        return selector(points, key=lambda point: point[0])
+
+    apex_side = "right" if connection_side == "left" else "left"
+    upper_connection_2d = endpoint_on_side(upper_rod_id, connection_side)
+    lower_connection_2d = endpoint_on_side(lower_rod_id, connection_side)
+    upper_apex_2d = endpoint_on_side(upper_rod_id, apex_side)
+    lower_apex_2d = endpoint_on_side(lower_rod_id, apex_side)
+
+    connection_y_span = lower_connection_2d[1] - upper_connection_2d[1]
+    if math.isclose(connection_y_span, 0.0, abs_tol=1e-9):
+        raise ValueError("羊角形 01 号正视图上下连接端高度相同，无法标定尖点 Z")
+
+    apex_y = (upper_apex_2d[1] + lower_apex_2d[1]) / 2.0
+    z_per_pixel = (lower_z - upper_z) / connection_y_span
+    return upper_z + (apex_y - upper_connection_2d[1]) * z_per_pixel
+
+
 def is_first_stretcher_apex_on_left(file_path, drawing_type):
     """判断 01 号担架的尖点是否位于两根一类杆件左端。从而区分J1和J3J4"""
     first_file_path = os.path.join(os.path.dirname(file_path), "01.txt")
@@ -731,6 +782,11 @@ def trans(
     elif drawing_type == "GuLou" and count_txt_files(os.path.dirname(file_path)) == 8:
         if is_first_stretcher_apex_on_left(file_path, drawing_type):
             pj = [pj[i] for i in (1, 0, 3, 2, 5, 4, 7, 6)]
+    elif drawing_type == "YangJiao":
+        # 羊角形共有 01、02、04、06 四张担架图：01/02 共用第一组，
+        # 04 使用第二组，06 使用第三组。四张图的连接端都位于左侧，
+        # 而每个物理组在 pj 中按右侧、左侧依次存放。
+        pj = [pj[i] for i in (0, 0, 2, 4)]
 
     pj = align_connection_groups(pj, drawing_id, connection_index)
 
@@ -739,6 +795,33 @@ def trans(
     # 需 +2（1→3, 2→4），保证担架和塔身的节点编号生成不会重复。是否偏移由调用方 work() 传入。
     id_prefix = drawing_id + 2 if id_offset else drawing_id
     jiandian_id = (id_prefix * 100 + 1) * 100
+
+    # 羊角形 01 号担架从塔身取得的 index 0 是下连接点；上连接点位于
+    # 塔身中心线，与下连接点组成 45 度等腰直角三角形。后续通用逻辑
+    # 约定 index 0/1 分别为上/下连接点，因此补点后需调整二者顺序。
+    if drawing_type == "YangJiao" and drawing_id == 1:
+        connection_group = pj[drawing_id - 1]
+        if not connection_group or len(connection_group) < 2:
+            raise ValueError("羊角形 01 号担架缺少塔身下连接点")
+
+        lower_connection = connection_group[0]
+        lower_xyz = lower_connection[1]
+        if not lower_xyz or len(lower_xyz) != 3:
+            raise ValueError("羊角形 01 号担架的塔身下连接点坐标无效")
+
+        lower_x, lower_y, lower_z = map(float, lower_xyz)
+        upper_node_id = str(jiandian_id + 10)
+        upper_xyz = [0.0, lower_y, lower_z - abs(lower_x)]
+        connection_group[1] = lower_connection
+        connection_group[0] = [upper_node_id, upper_xyz]
+        jiedian.append({
+            "node_id": upper_node_id,
+            "node_type": 11,
+            "symmetry_type": 2,
+            "X": upper_xyz[0],
+            "Y": upper_xyz[1],
+            "Z": upper_xyz[2],
+        })
 
 
     # 7837 干字型图纸最终生成的担架和塔身的节点编号有重复的，导致冲突，此处代码仅为了避免编号冲突
@@ -1230,6 +1313,13 @@ def trans(
         ############################################################################################################
 
         newx, newy, newz = calc_jiandian_xyz(coordinatesOverhead_data, drawing_id, pj, 0, rod_101_id, rod_102_id)
+        if drawing_type == "YangJiao" and drawing_id == 1:
+            newz = calc_yangjiao_01_apex_z(
+                coordinatesFront_data,
+                pj[drawing_id - 1],
+                rod_front_a,
+                rod_front_b,
+            )
         new_node = {
             "node_id": f"{jiandian_id + 20}",
             "node_type": 11,  # 根据实际情况设置节点类型
@@ -1487,6 +1577,7 @@ def trans(
                 "Z": f"1{jiandian_id + 20}"
             })
 
+        base_node_count = new_node_cnt
         new_node_cnt = 0  # 只统计“真正新建的节点”
         for i, item in enumerate(real_104):
             if item.get("endpoint_3d_id", -1) != -1:
@@ -1504,6 +1595,24 @@ def trans(
                 "point_2d": item["point_2d"]
             }
             node_104_ids.append(node_info)
+
+            # 羊角形 01 的两根底视图主杆交点数不一致时，补齐额外
+            # 对称节点对应的基础节点，避免产生悬空的节点引用。
+            if (
+                drawing_type == "YangJiao"
+                and drawing_id == 1
+                and new_node_cnt > base_node_count
+            ):
+                base_node_id = f"{id_prefix}391{new_node_cnt}0"
+                duichenzuo = int(pj[drawing_id - 1][1][0])
+                jiedian.append({
+                    "node_id": base_node_id,
+                    "node_type": 12,
+                    "symmetry_type": 2,
+                    "X": item["x_3d"],
+                    "Y": f"1{duichenzuo}",
+                    "Z": f"1{jiandian_id + 20}"
+                })
         # ----------------生成杆件---------------------------------------------------------------------------------------#
 
         member_to_nodes = generate_ganjian(coordinatesBottom_data, node_103_ids, node_104_ids,yuzhi)
@@ -1669,8 +1778,8 @@ def trans(
 
 
 
-#===== GanZi 型担架对称性生成 =====
-    if drawing_type == "GanZi":
+#===== GanZi ，羊角形型担架对称性生成 =====
+    if drawing_type == "GanZi" or drawing_type == "YangJiao":
         for g in ganjian:
             if g.get("symmetry_type") == 2:
                 g["symmetry_type"] = 4

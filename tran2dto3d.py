@@ -1,6 +1,7 @@
 import xintrans
 import tower_body_reconstruction
 import stretcher_tower_connection
+import yangjiao_pinjie
 import pandas as pd
 import os
 
@@ -132,12 +133,18 @@ def tran2dto3d(danjia_dir,tashen_dir,project_path,savepath_ui,drawing_type):
     #         specs.update(numandtableDetector.extract_table_specs(file_path))
 
 
-    ganjian_tashen, jiedian_tashen, pinjie_tashen = tower_body_reconstruction.build_tower_body(tashen_dir)
+    ganjian_tashen, jiedian_tashen, pinjie_tashen = tower_body_reconstruction.build_tower_body(
+        tashen_dir, drawing_type=drawing_type
+    )
 
     # ShangZi/GanZi 型根据担架正视图几何关系识别连接侧和上下杆，
     # 再用连接端点匹配塔身正视图横杆。
     if drawing_type in ("ShangZi", "GanZi"):
         pinjie_tashen = stretcher_tower_connection.build_stretcher_tower_pinjie(
+            danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen
+        )
+    elif drawing_type == "YangJiao":
+        pinjie_tashen = yangjiao_pinjie.build_yangjiao_stretcher_pinjie(
             danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen
         )
 

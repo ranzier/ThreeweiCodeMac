@@ -21,6 +21,7 @@ import dual_view_processor as dual_main
 import io_utils as rw
 import single_view_processor as sv
 import sv_class1_transform as t1
+from asymmetric_tower_normalizer import normalize_asymmetric_tower_view
 
 Point3D = Tuple[float, float, float]
 
@@ -320,8 +321,23 @@ def run_single_view_B(single_dir: str, file_glob: str = "*.txt"):
         if not isinstance(line_coord, dict):
             print(f"[警告] 单视图文件 {os.path.basename(p)} 解析失败，已跳过")
             continue
-        fm_sv, special_id = t1.build_final_map_single_view(line_coord)
-        UL, UR = t1.extract_top_span_points_single(line_coord)
+        normalization = normalize_asymmetric_tower_view(line_coord)
+        main_rod_ids = None
+        symmetry_axis = None
+        if normalization.applied:
+            line_coord = normalization.coordinates
+            main_rod_ids = normalization.main_rod_ids or None
+            symmetry_axis = normalization.symmetry_axis
+        fm_sv, special_id = t1.build_final_map_single_view(
+            line_coord,
+            main_rod_ids=main_rod_ids,
+            symmetry_axis=symmetry_axis,
+        )
+        UL, UR = t1.extract_top_span_points_single(
+            line_coord,
+            main_rod_ids=main_rod_ids,
+            symmetry_axis=symmetry_axis,
+        )
         if not UL or not UR or not special_id:
             continue
         z_top = max(UL[2], UR[2])
@@ -358,13 +374,20 @@ def apply_numeric_transform_B(
     t: Point3D,
     axis_map: Optional[Dict[str, Dict[str, str]]] = None,
     signed_x_node_ids: Optional[set[str]] = None,
+    scale_y: Optional[float] = None,
 ):
     """
-    对 B 线（塔头）的所有节点执行 缩放(s) + 平移(t) 变换。
-    目的是将塔头“安装”到塔身顶部。
+    Transform B-line nodes into the A-line coordinate system.
+
+    X/Z retain the historical uniform scale ``s``. Y may use an independent
+    scale because a single-view model is reconstructed with a square section,
+    while the dual-view interface can have different front/side half-widths.
+    Reference axes of type-12 nodes remain references and are not transformed.
     """
     axis_map = axis_map or {}
     signed_x_node_ids = signed_x_node_ids or set()
+    scale_y = s if scale_y is None else float(scale_y)
+    axis_scales = (float(s), scale_y, float(s))
 
     for nd in jiedian_B:
         nt = int(nd.get("node_type", 0))
@@ -375,12 +398,12 @@ def apply_numeric_transform_B(
                 # abs(X) for non-main-leg nodes mirrors rotated side members
                 # across the tower and creates cross-space connections.
                 nd["X"] = round(x_val * s + t[0], 6)
-                nd["Y"] = round(float(nd["Y"]) * s + t[1], 6)
+                nd["Y"] = round(float(nd["Y"]) * scale_y + t[1], 6)
                 nd["Z"] = round(float(nd["Z"]) * s + t[2], 6)
             elif all(k in nd for k in ("x", "y", "z")):
                 x_val = float(nd["x"])
                 nd["x"] = round(x_val * s + t[0], 6)
-                nd["y"] = round(float(nd["y"]) * s + t[1], 6)
+                nd["y"] = round(float(nd["y"]) * scale_y + t[1], 6)
                 nd["z"] = round(float(nd["z"]) * s + t[2], 6)
         elif nt == 12:
             node_id = str(nd.get("node_id", ""))
@@ -400,7 +423,7 @@ def apply_numeric_transform_B(
                     num_val = float(val)
                 except (TypeError, ValueError):
                     return
-                nd[axis_key] = round(num_val * s + t[idx], 6)
+                nd[axis_key] = round(num_val * axis_scales[idx] + t[idx], 6)
 
             for axis_key, idx in (("X", 0), ("Y", 1), ("Z", 2)):
                 _transform_axis(axis_key, idx)
@@ -422,7 +445,11 @@ def _collect_11_nodes(jiedian: List[dict]) -> Dict[str, Point3D]:
     return out
 
 
-def pick_bottom_support_point_for_bridge_A(jiedian_A: List[dict]) -> Tuple[str, Point3D]:
+def pick_bottom_support_point_for_bridge_A(
+    jiedian_A: List[dict],
+    pinjie_A: Optional[List[list]] = None,
+    z_tolerance: float = 1e-6,
+) -> Tuple[str, Point3D]:
     """
     在 A 线（塔身）中寻找用于桥接的“顶部”基准点。
     策略：找 Z 最大（最高）、且 X/Y 最小（最靠中心/左前）的 11 类节点。
@@ -436,16 +463,70 @@ def pick_bottom_support_point_for_bridge_A(jiedian_A: List[dict]) -> Tuple[str, 
             candidates[str(nd.get("node_id"))] = xyz
     if not candidates:
         raise RuntimeError("A线：未找到可用于桥接的节点")
-    best_id, best_xyz = max(
-        candidates.items(),
-        key=lambda item: (item[1][2], math.hypot(item[1][0], item[1][1]), item[0]),
+
+    max_real_z = max(point[2] for point in candidates.values())
+    top_real_nodes = {
+        node_id: point
+        for node_id, point in candidates.items()
+        if abs(point[2] - max_real_z) <= z_tolerance
+    }
+
+    # Splice records identify the verified front-face direction, but their
+    # highest entry is not necessarily the final top of the assembled A line.
+    # Use them only to select the matching face among real top-layer nodes.
+    splice_candidates: Dict[str, Point3D] = {}
+    for entry in pinjie_A or []:
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            continue
+        node_id, raw_point = entry[0], entry[1]
+        if not isinstance(raw_point, (list, tuple)) or len(raw_point) < 3:
+            continue
+        try:
+            splice_candidates[str(node_id)] = (
+                float(raw_point[0]),
+                float(raw_point[1]),
+                float(raw_point[2]),
+            )
+        except (TypeError, ValueError):
+            continue
+
+    if splice_candidates:
+        max_z = max(point[2] for point in splice_candidates.values())
+        top_splice = {
+            node_id: point
+            for node_id, point in splice_candidates.items()
+            if abs(point[2] - max_z) <= z_tolerance
+        }
+        reference = max(
+            top_splice.values(),
+            key=lambda point: math.hypot(point[0], point[1]),
+        )
+        ref_x, ref_y = abs(reference[0]), reference[1]
+        ref_norm = math.hypot(ref_x, ref_y)
+
+        def _face_score(item: Tuple[str, Point3D]) -> Tuple[float, float, str]:
+            node_id, point = item
+            px, py = abs(point[0]), point[1]
+            point_norm = math.hypot(px, py)
+            cosine = (
+                (px * ref_x + py * ref_y) / (point_norm * ref_norm)
+                if point_norm > 1e-9 and ref_norm > 1e-9
+                else -1.0
+            )
+            return cosine, point_norm, node_id
+
+        return max(top_real_nodes.items(), key=_face_score)
+
+    return max(
+        top_real_nodes.items(),
+        key=lambda item: (math.hypot(item[1][0], item[1][1]), item[0]),
     )
-    return best_id, best_xyz
 
 
 def pick_top_member_point_for_bridge_B(
     jiedian_B: List[dict],
     preferred_y_sign: Optional[int] = None,
+    z_tolerance: float = 1e-6,
 ) -> Tuple[str, Point3D]:
     """
     在 B 线（塔头）中寻找用于桥接的“底部”基准点。
@@ -467,11 +548,22 @@ def pick_top_member_point_for_bridge_B(
             return -1
         return 0
 
-    filtered_candidates = candidates
+    # Select the physical interface layer before applying a side preference.
+    # Filtering by Y sign first can discard the real main-leg endpoint because
+    # a symmetry-compressed model often stores only one quadrant. It may then
+    # choose a higher auxiliary/rotated-side node as the bridge reference.
+    min_z = min(xyz[2] for xyz in candidates.values())
+    interface_candidates = {
+        nid: xyz
+        for nid, xyz in candidates.items()
+        if abs(xyz[2] - min_z) <= z_tolerance
+    }
+
+    filtered_candidates = interface_candidates
     if preferred_y_sign in (-1, 1):
         same_side = {
             nid: xyz
-            for nid, xyz in candidates.items()
+            for nid, xyz in interface_candidates.items()
             if _side_sign(xyz[1]) == preferred_y_sign
         }
         if same_side:
@@ -689,11 +781,126 @@ def merge_and_print(ganjian_A, jiedian_A, pinjie_A, ganjian_B, jiedian_B):
     return ganjian, jiedian, pinjie
 
 
+def _is_yangjiao_tower(tashen_dir: Optional[str], drawing_type: Optional[str] = None) -> bool:
+    if drawing_type in {"YangJiao", "羊角", "羊角形"}:
+        return True
+    if not tashen_dir:
+        return False
+    name = os.path.basename(os.path.normpath(str(tashen_dir))).lower()
+    return name in {"y7850", "yangjiao"} or "羊角" in name
+
+
+def _count_yangjiao_stretchers(tashen_dir: Optional[str], default_count: int = 4) -> int:
+    if not tashen_dir:
+        return default_count
+
+    tower_dir = os.path.normpath(str(tashen_dir))
+    tower_name = os.path.basename(tower_dir)
+    tower_parent = os.path.dirname(os.path.dirname(tower_dir))
+    danjia_dir = os.path.join(tower_parent, "Danjia", tower_name)
+    if not os.path.isdir(danjia_dir):
+        return default_count
+
+    count = len(glob.glob(os.path.join(danjia_dir, "*.txt")))
+    return count if count > 0 else default_count
+
+
+def build_yangjiao_pinjie(
+    jiedian: List[dict],
+    tashen_dir: Optional[str] = None,
+    top_z_tol: float = 1.0,
+) -> List[list]:
+    """Build YangJiao stretcher splice points from the final tower-top layer."""
+    real_nodes: List[Tuple[str, Point3D]] = []
+    for node in jiedian or []:
+        try:
+            if int(node.get("node_type", 0)) != 11:
+                continue
+        except (TypeError, ValueError):
+            continue
+        point = _get_xyz(node)
+        if point is not None:
+            real_nodes.append((str(node.get("node_id")), point))
+
+    if len(real_nodes) < 2:
+        return []
+
+    max_z = max(point[2] for _, point in real_nodes)
+    layer = [
+        (node_id, point)
+        for node_id, point in real_nodes
+        if abs(point[2] - max_z) <= top_z_tol
+    ]
+    if len(layer) < 2:
+        layer = sorted(real_nodes, key=lambda item: item[1][2], reverse=True)[: min(8, len(real_nodes))]
+
+    left_top_id, left_top_point = min(layer, key=lambda item: item[1][0])
+    right_top_id, right_top_point = max(layer, key=lambda item: item[1][0])
+    if left_top_id == right_top_id:
+        return []
+
+    lower_candidates = [
+        (node_id, point)
+        for node_id, point in real_nodes
+        if point[2] < max_z - top_z_tol
+    ]
+    left_lower_candidates = [item for item in lower_candidates if item[1][0] < 0]
+    right_lower_candidates = [item for item in lower_candidates if item[1][0] > 0]
+    left_low_id, left_low_point = (
+        max(left_lower_candidates, key=lambda item: item[1][2])
+        if left_lower_candidates
+        else (left_top_id, left_top_point)
+    )
+    right_low_id, right_low_point = (
+        max(right_lower_candidates, key=lambda item: item[1][2])
+        if right_lower_candidates
+        else (right_top_id, right_top_point)
+    )
+
+    def _entry(node_id: str, point: Point3D) -> list:
+        return [node_id, [round(point[0], 6), round(point[1], 6), round(point[2], 6)]]
+
+    left_top = _entry(left_top_id, left_top_point)
+    right_top = _entry(right_top_id, right_top_point)
+    left_low = _entry(left_low_id, left_low_point)
+    right_low = _entry(right_low_id, right_low_point)
+
+    count = _count_yangjiao_stretchers(tashen_dir)
+    pinjie: List[list] = []
+    for _ in range(max(1, math.ceil(count / 2))):
+        # xintrans.transform_data() consumes a flat list in chunks of four and
+        # then splits each chunk into positive/negative X groups.
+        pinjie.extend([list(right_top), list(right_low), list(left_top), list(left_low)])
+    print(
+        f"[YangJiao pinjie] using tower-top nodes {left_top_id}/{right_top_id}, "
+        f"lower nodes {left_low_id}/{right_low_id}, entries={len(pinjie)}"
+    )
+    return pinjie
+
+
+def _apply_yangjiao_pinjie_if_needed(
+    ganjian: List[dict],
+    jiedian: List[dict],
+    pinjie: List[list],
+    tashen_dir: Optional[str],
+    drawing_type: Optional[str],
+) -> Tuple[List[dict], List[dict], List[list]]:
+    if not _is_yangjiao_tower(tashen_dir, drawing_type):
+        return ganjian, jiedian, pinjie
+    yangjiao_pinjie = build_yangjiao_pinjie(jiedian, tashen_dir)
+    return ganjian, jiedian, yangjiao_pinjie or pinjie
+
+
 # =========================
 # 主调度流程
 # =========================
 
-def run(dual_dir: str, single_dir: str):
+def run(
+    dual_dir: str,
+    single_dir: str,
+    tashen_dir: Optional[str] = None,
+    drawing_type: Optional[str] = None,
+):
     """
     总控流程：
     1. 运行 A 线（双视图） -> 得到塔身模型
@@ -716,14 +923,16 @@ def run(dual_dir: str, single_dir: str):
     if has_dual and not has_single:
         print("场景：仅双视图(A线) - 输出塔身模型")
         ganjian_A, jiedian_A, pinjie_A = run_dual_view(dual_dir)
-        return merge_and_print(ganjian_A, jiedian_A, pinjie_A, [], [])
+        merged = merge_and_print(ganjian_A, jiedian_A, pinjie_A, [], [])
+        return _apply_yangjiao_pinjie_if_needed(*merged, tashen_dir, drawing_type)
 
     # 场景2：只有单视图
     if not has_dual and has_single:
         print("场景：仅单视图(B线) - 输出塔头模型")
         ganjian_B, jiedian_B, _, _, _, axis_map = run_single_view_B(single_dir)
         if ganjian_B or jiedian_B:
-            return merge_and_print([], [], [], ganjian_B, jiedian_B)
+            merged = merge_and_print([], [], [], ganjian_B, jiedian_B)
+            return _apply_yangjiao_pinjie_if_needed(*merged, tashen_dir, drawing_type)
         else:
             return [], [], []
 
@@ -812,23 +1021,34 @@ def run(dual_dir: str, single_dir: str):
 
     ganjian_B, jiedian_B, _, _, _, axis_map = run_single_view_B(single_dir)
     if not ganjian_B and not jiedian_B:
-        return merge_and_print(ganjian_A, jiedian_A, pinjie_A, [], [])
+        merged = merge_and_print(ganjian_A, jiedian_A, pinjie_A, [], [])
+        return _apply_yangjiao_pinjie_if_needed(*merged, tashen_dir, drawing_type)
 
     # 计算对齐参数
-    _, A_point = pick_bottom_support_point_for_bridge_A(jiedian_A)
+    _, A_point = pick_bottom_support_point_for_bridge_A(jiedian_A, pinjie_A=pinjie_A)
     preferred_y_sign = -1 if A_point[1] < 0 else (1 if A_point[1] > 0 else 0)
     _, B_point = pick_top_member_point_for_bridge_B(jiedian_B, preferred_y_sign=preferred_y_sign)
 
-    # 假设：B 线底部宽度应匹配 A 线顶部宽度
-    # 这里用 X 坐标估算缩放比例
-    denom = abs(B_point[0]) * 2.0
-    if abs(denom) <= 1e-9:
+    # Match the two horizontal interface half-widths independently. A single
+    # view reconstructs a square section, but the dual-view interface may be
+    # rectangular; compensating that difference with Y translation shifts the
+    # rotated side-face members away from the tower centre.
+    denom_x = abs(B_point[0]) * 2.0
+    if abs(denom_x) <= 1e-9:
         raise RuntimeError("B线：桥接参考点的 X*2 为 0，无法计算缩放因子")
-    scale = (abs(A_point[0]) * 2.0) / denom
+    scale_xz = (abs(A_point[0]) * 2.0) / denom_x
 
-    # 计算平移向量
-    # 关键修复：使用绝对值来缩放，保持方向一致
-    B_point_scaled = (abs(B_point[0]) * scale, B_point[1] * scale, B_point[2] * scale)
+    denom_y = abs(B_point[1]) * 2.0
+    if abs(denom_y) <= 1e-9 or abs(A_point[1]) <= 1e-9:
+        scale_y = scale_xz
+    else:
+        scale_y = (abs(A_point[1]) * 2.0) / denom_y
+
+    B_point_scaled = (
+        abs(B_point[0]) * scale_xz,
+        B_point[1] * scale_y,
+        B_point[2] * scale_xz,
+    )
     translation = (
         abs(A_point[0]) - abs(B_point_scaled[0]),
         A_point[1] - B_point_scaled[1],
@@ -839,22 +1059,24 @@ def run(dual_dir: str, single_dir: str):
     signed_x_node_ids = _collect_main_leg_node_ids(ganjian_B)
     apply_numeric_transform_B(
         jiedian_B,
-        scale,
+        scale_xz,
         translation,
         axis_map=axis_map,
         signed_x_node_ids=signed_x_node_ids,
+        scale_y=scale_y,
     )
 
-    return merge_and_print(ganjian_A, jiedian_A, pinjie_A, ganjian_B, jiedian_B)
+    merged = merge_and_print(ganjian_A, jiedian_A, pinjie_A, ganjian_B, jiedian_B)
+    return _apply_yangjiao_pinjie_if_needed(*merged, tashen_dir, drawing_type)
 
 
-def run_autodetect(root_dir: str):
+def run_autodetect(root_dir: str, drawing_type: Optional[str] = None):
     dual_dir, single_dir = autodetect_and_stage(root_dir)
-    return run(dual_dir, single_dir)
+    return run(dual_dir, single_dir, tashen_dir=root_dir, drawing_type=drawing_type)
 
 
-def build_tower_body(tashen_dir):
-    ganjian, jiedian, pinjie = run_autodetect(tashen_dir)
+def build_tower_body(tashen_dir, drawing_type: Optional[str] = None):
+    ganjian, jiedian, pinjie = run_autodetect(tashen_dir, drawing_type=drawing_type)
     return ganjian, jiedian, pinjie
 
 
@@ -869,7 +1091,7 @@ def build_tower_body(tashen_dir):
 def main():
     """命令行入口，可选传入数据目录。"""
 
-    default_data_directory = r"D:\SanWei\TaShen\output\7837"
+    default_data_directory = r"D:\SanWei\zuobiao\TaShen\Y7850"
 
     if len(sys.argv) > 1:
         data_directory = sys.argv[1]
