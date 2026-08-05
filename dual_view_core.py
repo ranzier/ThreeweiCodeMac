@@ -37,11 +37,42 @@ def _collect_endpoints(segdict: Model3DData) -> List[Point3D]:
             pts.append(seg[0]); pts.append(seg[1])
     return pts
 
-def center_props(front3d: Model3DData, right3d: Model3DData):
-    """Return the combined model center in XY and the minimum Z coordinate."""
+def center_props(
+    front3d: Model3DData,
+    right3d: Model3DData,
+    front_support_keys: Optional[Set[str]] = None,
+    right_support_keys: Optional[Set[str]] = None,
+):
+    """Return the support-defined model center and minimum Z coordinate.
+
+    Secondary members may legitimately extend beyond the main-leg envelope.
+    They must not move the tower axis, otherwise symmetry-generated front or
+    side members no longer meet their reconstructed endpoints.
+    """
     all_pts = _collect_endpoints(front3d) + _collect_endpoints(right3d)
     if not all_pts: return (0.0, 0.0, 0.0), 0.0
-    xs = [p[0] for p in all_pts]; ys = [p[1] for p in all_pts]; zs = [p[2] for p in all_pts]
+
+    def _support_points(
+        model: Model3DData,
+        keys: Optional[Set[str]],
+        prefix: str,
+    ) -> List[Point3D]:
+        points: List[Point3D] = []
+        for raw_key in keys or set():
+            key = str(raw_key)
+            model_key = key if key.startswith(prefix) else f"{prefix}{key}"
+            segment = model.get(model_key)
+            if segment and len(segment) >= 2:
+                points.extend(segment[:2])
+        return points
+
+    front_support_pts = _support_points(front3d, front_support_keys, "F_")
+    right_support_pts = _support_points(right3d, right_support_keys, "R_")
+    x_points = front_support_pts or all_pts
+    y_points = right_support_pts or all_pts
+    xs = [p[0] for p in x_points]
+    ys = [p[1] for p in y_points]
+    zs = [p[2] for p in all_pts]
     x_center = (min(xs) + max(xs)) / 2.0
     y_center = (min(ys) + max(ys)) / 2.0
     z_min = min(zs)
@@ -242,7 +273,17 @@ def _select_main_rods_by_geometry(
     shorter braces from winning; selecting the horizontal extremes then
     prevents full-height crossing diagonals from replacing the outer legs.
     """
-    geometry: List[Tuple[str, float, float, float]] = []
+    all_points = [
+        point
+        for endpoints in coordinates_data.values()
+        if isinstance(endpoints, (list, tuple)) and len(endpoints) == 2
+        for point in endpoints
+    ]
+    if not all_points:
+        return []
+
+    center_x = (min(float(point[0]) for point in all_points) + max(float(point[0]) for point in all_points)) / 2.0
+    geometry: List[Tuple[str, float, float, float, float]] = []
     for member_id, endpoints in coordinates_data.items():
         if not isinstance(endpoints, (list, tuple)) or len(endpoints) != 2:
             continue
@@ -250,9 +291,14 @@ def _select_main_rods_by_geometry(
         vertical_span = abs(float(p2[1]) - float(p1[1]))
         if vertical_span <= 1e-9:
             continue
-        midpoint_x = (float(p1[0]) + float(p2[0])) / 2.0
+        x1 = float(p1[0])
+        x2 = float(p2[0])
+        if (x1 - center_x) * (x2 - center_x) < 0:
+            continue
+        midpoint_x = (x1 + x2) / 2.0
+        outer_distance = abs(midpoint_x - center_x)
         length = _segment_length(p1, p2)
-        geometry.append((str(member_id), vertical_span, midpoint_x, length))
+        geometry.append((str(member_id), vertical_span, midpoint_x, outer_distance, length))
 
     if len(geometry) < top_k:
         return []
@@ -266,14 +312,21 @@ def _select_main_rods_by_geometry(
     if len(full_height) < top_k:
         return []
 
-    full_height.sort(key=lambda item: (item[2], -item[1], -item[3], _member_sort_key(item[0])))
+    full_height.sort(key=lambda item: (item[2], -item[3], -item[1], -item[4], _member_sort_key(item[0])))
     if top_k == 1:
         return [full_height[0][0]]
 
-    selected = [full_height[0][0], full_height[-1][0]]
+    left_pool = [item for item in full_height if item[2] < center_x]
+    right_pool = [item for item in full_height if item[2] > center_x]
+    if not left_pool or not right_pool:
+        return []
+
+    left = max(left_pool, key=lambda item: (item[3], item[1], item[4], -_numeric_member_id(item[0])))
+    right = max(right_pool, key=lambda item: (item[3], item[1], item[4], -_numeric_member_id(item[0])))
+    selected = [left[0], right[0]]
     if top_k > 2:
         selected_ids = set(selected)
-        remaining = sorted(full_height[1:-1], key=lambda item: (-item[1], -item[3]))
+        remaining = sorted(full_height, key=lambda item: (-item[3], -item[1], -item[4]))
         selected.extend(item[0] for item in remaining if item[0] not in selected_ids)
     return sorted(selected[:top_k], key=_member_sort_key)
 
@@ -306,9 +359,9 @@ def detect_main_rods_enhanced(coordinates_data: CoordDict, top_k: int = 2) -> Li
         p1, p2 = endpoints
         rod_items.append((rod_key, num_id, _segment_length(p1, p2)))
 
-    fallback_ids = _select_main_rods_by_geometry(coordinates_data, top_k)
+    geometry_ids = _select_main_rods_by_geometry(coordinates_data, top_k)
     if len(rod_items) < top_k:
-        return fallback_ids
+        return geometry_ids
 
     rod_items.sort(key=lambda item: item[2], reverse=True)
     candidates = [item[0] for item in rod_items[:top_k]]
@@ -316,7 +369,7 @@ def detect_main_rods_enhanced(coordinates_data: CoordDict, top_k: int = 2) -> Li
     all_ids.sort(key=lambda item: (item[1], item[0]))
     min_two_ids = [item[0] for item in all_ids[:top_k]]
     if len(min_two_ids) < top_k:
-        return fallback_ids
+        return geometry_ids
 
     candidates_set = set(candidates)
     min_two_set = set(min_two_ids)
@@ -340,12 +393,12 @@ def detect_main_rods_enhanced(coordinates_data: CoordDict, top_k: int = 2) -> Li
         for member_id in result
     ]
     if (
-        fallback_ids
+        geometry_ids
         and selected_vertical_spans
         and min(selected_vertical_spans) < max_vertical_span * 0.8
     ):
-        return fallback_ids
-    return result
+        return geometry_ids
+    return geometry_ids or result
 
 def clean_view(view: CoordDict, view_name: str, round_ndigits: Optional[int] = None) -> CoordDict:
     """Validate member endpoints, remove degenerate members, and optionally round coordinates."""
@@ -414,17 +467,16 @@ def remap_vertical_coordinates(
                 best_distance = distance
         return best_id if best_distance <= support_tolerance else None
 
-    def _projection_ratio(point: Coord, segment: List[Coord]) -> Optional[float]:
+    def _x_at_height(y_value: float, segment: List[Coord]) -> Optional[float]:
         if len(segment) != 2:
             return None
-        px, py = point
         (x1, y1), (x2, y2) = segment
-        dx, dy = x2 - x1, y2 - y1
-        length_sq = dx * dx + dy * dy
-        if length_sq <= 1e-12:
-            return None
-        ratio = ((px - x1) * dx + (py - y1) * dy) / length_sq
-        return max(0.0, min(1.0, ratio))
+        dy = y2 - y1
+        if abs(dy) <= 1e-12:
+            return (float(x1) + float(x2)) / 2.0
+        ratio = (float(y_value) - float(y1)) / float(dy)
+        ratio = max(0.0, min(1.0, ratio))
+        return float(x1) + ratio * (float(x2) - float(x1))
 
     out: CoordDict = {}
     for member_id, segment in view.items():
@@ -438,22 +490,11 @@ def remap_vertical_coordinates(
             target_y = float(target_low) + level * (float(target_high) - float(target_low))
             target_x = float(x_value)
             support_id = _attached_support_id(source_point)
-            source_segment = source_support.get(support_id) if support_id else None
             target_segment = target_support.get(support_id) if support_id else None
-            if source_segment and target_segment and len(target_segment) == 2:
-                support_ratio = _projection_ratio(source_point, source_segment)
-                if support_ratio is not None:
-                    target_start, target_end = target_segment
-                    source_dy = source_segment[1][1] - source_segment[0][1]
-                    target_dy = target_end[1] - target_start[1]
-                    if source_dy * target_dy < 0:
-                        target_start, target_end = target_end, target_start
-                    target_x = target_start[0] + support_ratio * (
-                        target_end[0] - target_start[0]
-                    )
-                    target_y = target_start[1] + support_ratio * (
-                        target_end[1] - target_start[1]
-                    )
+            if target_segment and len(target_segment) == 2:
+                support_x = _x_at_height(target_y, target_segment)
+                if support_x is not None:
+                    target_x = support_x
             points.append((target_x, target_y))
         out[str(member_id)] = points
     return out
@@ -473,8 +514,18 @@ def find_supports(view: CoordDict) -> CoordDict:
                          (float(seg[1][0]), float(seg[1][1]))]
     return out
 
-def find_horizontals(view: CoordDict, tol_y: float, exclude_support: bool = True) -> CoordDict:
-    """Return near-horizontal members, optionally excluding detected non-horizontal supports."""
+def find_horizontals(
+    view: CoordDict,
+    tol_y: float,
+    exclude_support: bool = True,
+    support_reference: Optional[CoordDict] = None,
+) -> CoordDict:
+    """Return full-width horizontal members.
+
+    When support geometry is supplied, center-to-side and same-side members
+    remain secondary members.  Treating those half members as full-width
+    chords changes their topology during symmetry enforcement.
+    """
     support_ids = set()
     if exclude_support:
         for sid in detect_main_rods_enhanced(view, top_k=2):
@@ -485,12 +536,32 @@ def find_horizontals(view: CoordDict, tol_y: float, exclude_support: bool = True
             if abs(float(y1) - float(y2)) > float(tol_y):
                 support_ids.add(str(sid))
 
+    center_x: Optional[float] = None
+    center_tolerance = 0.0
+    if support_reference:
+        support_x = [
+            float(point[0])
+            for segment in support_reference.values()
+            for point in segment
+        ]
+        if support_x:
+            min_x, max_x = min(support_x), max(support_x)
+            center_x = (min_x + max_x) / 2.0
+            center_tolerance = max(1e-6, (max_x - min_x) * 0.005)
+
     out: CoordDict = {}
     for k, seg in view.items():
         if str(k) in support_ids:
             continue
         (x1, y1), (x2, y2) = seg
-        if abs(float(y1) - float(y2)) <= float(tol_y):
+        spans_center = (
+            center_x is None
+            or (
+                min(float(x1), float(x2)) < center_x - center_tolerance
+                and max(float(x1), float(x2)) > center_x + center_tolerance
+            )
+        )
+        if abs(float(y1) - float(y2)) <= float(tol_y) and spans_center:
             out[str(k)] = [(float(x1), float(y1)), (float(x2), float(y2))]
     return out
 
@@ -647,7 +718,7 @@ def match_support_slopes(front_support: CoordDict,
                                      unify_bounds: bool = True,
                                      round_to_int: bool = False,
                                      y_round_to_int: bool = False) -> Tuple[CoordDict, CoordDict]:
-    """Fit front and side support slopes to a common profile while preserving their anchors."""
+    """Fit support slopes while preserving each view's physical taper when requested."""
     if not front_support or not right_support:
         return front_support, right_support
 
@@ -682,8 +753,14 @@ def match_support_slopes(front_support: CoordDict,
             return k1
         return (k1 + k2) / 2.0
 
-    kL = _target_k(F_left.k,  R_left.k)
-    kR = _target_k(F_right.k, R_right.k)
+    if strategy == "independent":
+        front_k_left, front_k_right = F_left.k, F_right.k
+        right_k_left, right_k_right = R_left.k, R_right.k
+    else:
+        kL = _target_k(F_left.k, R_left.k)
+        kR = _target_k(F_right.k, R_right.k)
+        front_k_left = right_k_left = kL
+        front_k_right = right_k_right = kR
 
     def _rebuild(line: Line, k_new):
         y_anchor = (gmin + gmax) / 2.0
@@ -706,10 +783,10 @@ def match_support_slopes(front_support: CoordDict,
 
     front_support = dict(front_support)
     right_support = dict(right_support)
-    front_support[F_left.id]  = _rebuild(F_left,  kL)
-    right_support[R_left.id]  = _rebuild(R_left,  kL)
-    front_support[F_right.id] = _rebuild(F_right, kR)
-    right_support[R_right.id] = _rebuild(R_right, kR)
+    front_support[F_left.id] = _rebuild(F_left, front_k_left)
+    right_support[R_left.id] = _rebuild(R_left, right_k_left)
+    front_support[F_right.id] = _rebuild(F_right, front_k_right)
+    right_support[R_right.id] = _rebuild(R_right, right_k_right)
     return front_support, right_support
 
 
@@ -746,7 +823,7 @@ def _best_pair_near_width(Xs: List[float], target: float) -> Optional[Tuple[floa
 def plan_top_span(
     front_support_models: List[Line], right_support_models: List[Line],
     front_horizontal: CoordDict, right_horizontal: CoordDict,
-    length_mode: str = "min",            # "min" | "mean" | "front" | "right"
+    length_mode: str = "min",  # "min" | "mean" | "front" | "right" | "independent"
     pair_mode: str = "extreme",
     top_tolerance_ratio: float = 0.05,
     top_tolerance_abs: float = 50.0,
@@ -803,18 +880,24 @@ def plan_top_span(
         if Lr0 > Rr0: Lr0, Rr0 = Rr0, Lr0
         Wf0, Wr0 = (Rf0 - Lf0), (Rr0 - Lr0)
 
-        if length_mode == "front":
+        if length_mode == "independent":
+            Wtf, Wtr = Wf0, Wr0
+        elif length_mode == "front":
             Wt = Wf0
+            Wtf = Wtr = Wt
         elif length_mode == "right":
             Wt = Wr0
+            Wtf = Wtr = Wt
         elif length_mode == "mean":
             Wt = (Wf0 + Wr0) / 2.0
+            Wtf = Wtr = Wt
         else:
             Wt = min(Wf0, Wr0)
+            Wtf = Wtr = Wt
 
         Cf, Cr = (Lf0 + Rf0) / 2.0, (Lr0 + Rr0) / 2.0
-        Lf, Rf = Cf - Wt / 2.0, Cf + Wt / 2.0
-        Lr, Rr = Cr - Wt / 2.0, Cr + Wt / 2.0
+        Lf, Rf = Cf - Wtf / 2.0, Cf + Wtf / 2.0
+        Lr, Rr = Cr - Wtr / 2.0, Cr + Wtr / 2.0
 
     else:
         Xf = _xset_at(front_support_models, y_top)
@@ -1710,19 +1793,21 @@ def _build_pinjie_from_front_horiz(final_coords_map: dict,
     if not front_h_ids:
         return []
 
-    m_to_nodes = {}
+    front_member_to_nodes = {}
     for g in (ganjian or []):
         mid = str(g.get('member_id'))
         n1  = str(g.get('node1_id'))
         n2  = str(g.get('node2_id'))
-        if mid and (n1 is not None) and (n2 is not None):
-            m_to_nodes[mid] = (n1, n2)
-
-    # def _base_id(k: str) -> str:
-    #     return str(k).split('_', 1)[0]
-    def _base_id(k: str) -> str:
-        k = str(k).replace("F_", "").replace("R_", "")
-        return k.split('_', 1)[0]
+        # Front horizontals are emitted with symmetry type 2; side-view
+        # horizontals use type 1.  Keep the view distinction so equal member
+        # IDs in the two source views cannot overwrite each other.
+        if (
+            mid
+            and int(g.get('symmetry_type', 0)) == 2
+            and (n1 is not None)
+            and (n2 is not None)
+        ):
+            front_member_to_nodes.setdefault(mid, (n1, n2))
 
     # 4) Collect endpoints by horizontal member, not by globally de-duplicated
     # node id. The stretcher interface consumes pinjie in groups of four:
@@ -1730,18 +1815,18 @@ def _build_pinjie_from_front_horiz(final_coords_map: dict,
     horizontal_items = []
     seen_member_keys = set()
     for k, seg in (final_coords_map or {}).items():
-        base = _base_id(k)
-        if base not in front_h_ids:
-            continue
         member_key = str(k)
+        if not member_key.startswith("F_"):
+            continue
+        member_id = member_key[2:]
+        if member_id not in front_h_ids:
+            continue
         if member_key in seen_member_keys:
             continue
         if not isinstance(seg, (list, tuple)) or len(seg) != 2:
             continue
 
-        node_ids = m_to_nodes.get(str(k))
-        if node_ids is None:
-            node_ids = m_to_nodes.get(base)
+        node_ids = front_member_to_nodes.get(member_id)
         if node_ids is None:
             continue
 

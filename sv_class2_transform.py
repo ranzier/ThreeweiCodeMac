@@ -771,6 +771,50 @@ def single_view0201(
             virtual_nodes.append(virtual_node_id)
         tier1_nodes_map[member_instance_id(virtual_id)] = tuple(virtual_nodes)
 
+    def _front_face_y_at_z(z3d):
+        """Interpolate the front-face depth from the two outer main legs."""
+        in_span_values = []
+        nearest_values = []
+
+        for main_rod_id in real_lines01:
+            node_pair = tier1_nodes_map.get(member_instance_id(main_rod_id))
+            if not node_pair:
+                continue
+
+            point1 = _resolve_node_xyz(node_pair[0])
+            point2 = _resolve_node_xyz(node_pair[1])
+            if point1 is None or point2 is None:
+                continue
+
+            z1, z2 = point1[2], point2[2]
+            if abs(z2 - z1) < 1e-9:
+                continue
+
+            ratio = (z3d - z1) / (z2 - z1)
+            clamped_ratio = max(0.0, min(1.0, ratio))
+            y_value = point1[1] + clamped_ratio * (point2[1] - point1[1])
+            z_min, z_max = sorted((z1, z2))
+            span_gap = max(z_min - z3d, 0.0, z3d - z_max)
+            nearest_values.append((span_gap, y_value))
+
+            if -1e-6 <= ratio <= 1.0 + 1e-6:
+                in_span_values.append(y_value)
+
+        if in_span_values:
+            return sum(in_span_values) / len(in_span_values)
+        if nearest_values:
+            min_gap = min(item[0] for item in nearest_values)
+            closest = [
+                y_value
+                for gap, y_value in nearest_values
+                if abs(gap - min_gap) < 1e-9
+            ]
+            return sum(closest) / len(closest)
+
+        raise ValueError(
+            f"Cannot determine the single-view front face at Z={z3d}"
+        )
+
     unclassified = {k: v for k, v in line_coord.items() if k not in lines01}
     tolerance = 35.0
 
@@ -960,8 +1004,9 @@ def single_view0201(
             return shared_node_map[cluster_key]
 
         nid = get_safe_nid(node_id_base(member_id))
-        x3d, y3d, z3d = projector(pt[0], pt[1])
-        add_node(nid, 11, 4, x3d, y3d, z3d, pt, export=True)
+        x3d, _, z3d = projector(pt[0], pt[1])
+        front_y3d = _front_face_y_at_z(z3d)
+        add_node(nid, 11, 4, x3d, front_y3d, z3d, pt, export=True)
         shared_node_map[cluster_key] = str(nid)
         return str(nid)
 

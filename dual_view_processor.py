@@ -18,6 +18,7 @@ from dual_view_core import (
     drop_vertical_members,  # 原有
     remap_vertical_coordinates,
 )
+from asymmetric_tower_normalizer import normalize_asymmetric_tower_view
 
 # ====== 拼接与定标开关 ======
 # 这些开关决定流程在“多模型拼接”和“全局定标”阶段的交互方式，方便交付他人时快速切换模式。
@@ -603,8 +604,32 @@ def main(data_dir: str):
             front_raw = clean_view(front_raw, "正面")
             right_raw = clean_view(right_raw, "右侧面")
 
-            front_raw_for_tiers = dict(front_raw)
-            right_raw_for_tiers = dict(right_raw)
+            front_normalization = normalize_asymmetric_tower_view(front_raw)
+            right_normalization = normalize_asymmetric_tower_view(right_raw)
+            front_virtual_supports: CoordDict = {}
+            right_virtual_supports: CoordDict = {}
+            front_virtual_ids: set[str] = set()
+            right_virtual_ids: set[str] = set()
+            if front_normalization.applied:
+                front_raw = front_normalization.coordinates
+                front_virtual_supports = front_normalization.virtual_supports
+                front_virtual_ids = set(front_virtual_supports)
+                print(
+                    f"  - [高低坡归一化/正面] 保留 "
+                    f"{front_normalization.source_side} 侧主杆 "
+                    f"{front_normalization.main_rod_ids[0]}，删除 "
+                    f"{len(front_normalization.removed_ids)} 根短侧杆件"
+                )
+            if right_normalization.applied:
+                right_raw = right_normalization.coordinates
+                right_virtual_supports = right_normalization.virtual_supports
+                right_virtual_ids = set(right_virtual_supports)
+                print(
+                    f"  - [高低坡归一化/侧面] 保留 "
+                    f"{right_normalization.source_side} 侧主杆 "
+                    f"{right_normalization.main_rod_ids[0]}，删除 "
+                    f"{len(right_normalization.removed_ids)} 根短侧杆件"
+                )
 
             # CAD horizontal members often carry a few drawing-unit Y offset.
             # Scale the tolerance to this drawing while keeping it below the
@@ -617,8 +642,14 @@ def main(data_dir: str):
             ]
             vertical_span = max(all_y_values) - min(all_y_values) if all_y_values else 0.0
             H_TOL = min(25.0, max(10.0, vertical_span * 0.005))
-            front_support = find_supports(front_raw)
-            right_support = find_supports(right_raw)
+            front_support = find_supports({
+                **front_raw,
+                **front_virtual_supports,
+            })
+            right_support = find_supports({
+                **right_raw,
+                **right_virtual_supports,
+            })
             if len(front_support) < 2 or len(right_support) < 2:
                 print(
                     "  - 错误：主杆识别不足，无法建立双视图基座，跳过。"
@@ -632,11 +663,13 @@ def main(data_dir: str):
 
             front_horizontal = find_horizontals(
                 {k: v for k, v in front_raw.items() if k not in front_support},
-                tol_y=H_TOL
+                tol_y=H_TOL,
+                support_reference=front_support,
             )
             right_horizontal = find_horizontals(
                 {k: v for k, v in right_raw.items() if k not in right_support},
-                tol_y=H_TOL
+                tol_y=H_TOL,
+                support_reference=right_support,
             )
             # Reference topology belongs to the source CAD drawing.  Keep it
             # separate from the geometry that is later symmetrized/refitted.
@@ -665,7 +698,11 @@ def main(data_dir: str):
             front_height_span = _support_height_span(front_support)
             right_height_span = _support_height_span(right_support)
 
-            front_support, right_support = match_support_slopes(front_support, right_support)
+            front_support, right_support = match_support_slopes(
+                front_support,
+                right_support,
+                strategy="independent",
+            )
 
             f_models = build_support_models(front_support)
             r_models = build_support_models(right_support)
@@ -683,7 +720,13 @@ def main(data_dir: str):
                 max(span[1] for span in model_spans),
             ) if model_spans else None
 
-            plan = plan_top_span(f_models, r_models, front_horizontal, right_horizontal)
+            plan = plan_top_span(
+                f_models,
+                r_models,
+                front_horizontal,
+                right_horizontal,
+                length_mode="independent",
+            )
             if plan:
                 y_top, Lf, Rf, Lr, Rr = plan["y_top"], plan["Lf"], plan["Rf"], plan["Lr"], plan["Rr"]
                 if plan["front_top_key"]:
@@ -948,26 +991,51 @@ def main(data_dir: str):
                 target_support=right_support,
             )
 
-            front_total = {**front_support, **front_horizontal, **class2_front}
-            right_total = {**right_support, **right_horizontal, **class2_right}
+            front_export_support = {
+                key: value for key, value in front_support.items()
+                if str(key) not in front_virtual_ids
+            }
+            right_export_support = {
+                key: value for key, value in right_support.items()
+                if str(key) not in right_virtual_ids
+            }
+            front_source_export_support = {
+                key: value for key, value in front_source_support.items()
+                if str(key) not in front_virtual_ids
+            }
+            right_source_export_support = {
+                key: value for key, value in right_source_support.items()
+                if str(key) not in right_virtual_ids
+            }
+
+            front_total = {
+                **front_export_support,
+                **front_horizontal,
+                **class2_front,
+            }
+            right_total = {
+                **right_export_support,
+                **right_horizontal,
+                **class2_right,
+            }
             # Determine attachments from the unmodified CAD coordinates.
             # Geometry remapping can move only one member at a junction and
             # would otherwise erase valid secondary-to-secondary references.
             front_reference_tiers = _classify_reference_tiers(
                 {
-                    **front_source_support,
+                    **front_source_export_support,
                     **front_source_horizontal,
                     **front_secondary_source,
                 },
-                {**front_source_support, **front_source_horizontal},
+                {**front_source_export_support, **front_source_horizontal},
             )
             right_reference_tiers = _classify_reference_tiers(
                 {
-                    **right_source_support,
+                    **right_source_export_support,
                     **right_source_horizontal,
                     **right_secondary_source,
                 },
-                {**right_source_support, **right_source_horizontal},
+                {**right_source_export_support, **right_source_horizontal},
             )
 
             fbases = extract_bases_front(front_support, front_horizontal)
@@ -985,22 +1053,25 @@ def main(data_dir: str):
             f3d = reconstruct3d_front(front_total, front_support, front_horizontal, sbases)
             r3d = reconstruct3d_right(right_total, right_support, right_horizontal, fbases)
 
-            center_xyz, z_minimum = center_props(f3d, r3d)
+            center_xyz, z_minimum = center_props(
+                f3d,
+                r3d,
+                front_support_keys=set(map(str, front_export_support.keys())),
+                right_support_keys=set(map(str, right_export_support.keys())),
+            )
             translation_target = (center_xyz[0], center_xyz[1], z_minimum)
             f3d, r3d = translate_model(f3d, r3d, translation_target)
             print("  - 已执行模型中心平移。")
-
-            fs_models = build_support_models(front_support)
-            leftmost_support_id = fs_models[0].id if fs_models else None
 
             all_models_data[stem] = {
                 'name': stem,
                 'f3d': f3d,
                 'r3d': r3d,
-                'front_support_keys': set(map(str, front_support.keys())),
-                'right_support_keys': set(map(str, right_support.keys())),
+                'front_support_keys': set(map(str, front_export_support.keys())),
+                'right_support_keys': set(map(str, right_export_support.keys())),
                 'ganjian_args': {
-                    'front_support': front_support, 'right_support': right_support,
+                    'front_support': front_export_support,
+                    'right_support': right_export_support,
                     'front_horizontal': front_horizontal, 'right_horizontal': right_horizontal,
                     'front_x_fixed': class2_front,
                     'right_x_fixed': class2_right,

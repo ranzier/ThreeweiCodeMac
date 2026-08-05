@@ -41,7 +41,6 @@ savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
 
 
 
-# todo: Z1图纸的担架1和担架4存在问题
 
 
 
