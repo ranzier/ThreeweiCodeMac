@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-整理 T7833 目录下的坐标数据到 tashen 和 danjia 两个目录。
+整理指定源目录下的坐标数据到 tashen 和 danjia 两个目录。
+
+用法:
+    python organize.py                # 默认整理 T7833
+    python organize.py 7837           # 整理 7837 目录
+    python organize.py T7833 7837     # 依次整理多个目录
+
+输出目录会带上源目录名中的数字后缀,例如源目录 7837 -> tashen-7837 / danjia-7837,
+源目录 T7833 -> tashen-7833 / danjia-7833。
 
 规则:
 1. 以数字(0x)为前缀分组。
 2. 如果某个前缀下只有一个文件(如 03_front、04_front),直接复制该文件到 tashen 目录(保留原文件名)。
-3. 否则按前缀合并:
-   - danjia 组: 文件名含 "danjia" 或 "top" 的文件,内容合并到 danjia/0x.txt,
+3. 多文件时按文件表示的部件分组，不依赖某个视图有几个文件:
+   - 文件名带 danjia/tashen 时以显式标记为准。
+   - 无标记的 bottom/top 归担架，front/side 归塔身。
+   - danjia 组内容合并到 danjia/0x.txt,
      并对变量名做重命名(danjia_coordinatesBottom_data -> coordinatesBottom_data,
      danjia_coordinatesFront_data -> coordinatesFront_data,
-     coordinatesTop_data -> coordinatesOverhead_data)
-   - tashen 组: 文件名含 "tashen" 或 "side" 的文件,内容合并到 tashen/0x.txt,
+     danjia_coordinatesTop_data/coordinatesTop_data -> coordinatesOverhead_data)
+   - tashen 组内容合并到 tashen/0x.txt,
      先删除 tashen_coordinatesBottom_data 整个数据块,再对变量名做重命名
      (tashen_coordinatesFront_data -> coordinatesFront_data,
-     coordinatesSide_data -> coordinatesOverhead_data)
+     coordinatesSide_data -> coordinatesOverhead_data)。合并视图中拆出的
+     tashen_coordinatesTop_data 不重复输出，塔身使用独立 side 视图。
 4. 剔除不属于塔身的杆件: 断裂的担架残段会从塔身两侧伸出,其端点在 x 方向上
    明显离群(与塔身主体之间存在远大于常规间距的空隙)。检测这类边缘离群端点,
    并删除任何触及它们的杆件。
@@ -22,15 +33,16 @@
 
 import os
 import re
+import sys
 import shutil
 import statistics
 from collections import defaultdict
 
-# 源目录(脚本所在目录下的 T7833)
+# 脚本所在目录
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SRC_DIR = os.path.join(BASE_DIR, "T7833")
-TASHEN_DIR = os.path.join(BASE_DIR, "tashen")
-DANJIA_DIR = os.path.join(BASE_DIR, "danjia")
+
+# 默认整理的源目录名
+DEFAULT_SRC = "T7833"
 
 # 匹配数字前缀,如 01_xxx.txt -> 01
 PREFIX_RE = re.compile(r"^(\d+)_")
@@ -39,17 +51,31 @@ PREFIX_RE = re.compile(r"^(\d+)_")
 DANJIA_RENAMES = [
     ("danjia_coordinatesBottom_data", "coordinatesBottom_data"),
     ("danjia_coordinatesFront_data", "coordinatesFront_data"),
+    ("danjia_coordinatesTop_data", "coordinatesOverhead_data"),
     ("coordinatesTop_data", "coordinatesOverhead_data"),
 ]
 
-# tashen 文件内要删除的整个数据块的变量名
-TASHEN_DROPS = ["tashen_coordinatesBottom_data"]
+# tashen 文件内要删除的整个数据块的变量名。
+# top 是从担架合并视图中拆出的塔身部分，塔身俯视使用独立 side 视图。
+TASHEN_DROPS = [
+    "tashen_coordinatesBottom_data",
+    "tashen_coordinatesTop_data",
+]
 
 # tashen 文件内变量名的重命名规则
 TASHEN_RENAMES = [
     ("tashen_coordinatesFront_data", "coordinatesFront_data"),
     ("coordinatesSide_data", "coordinatesOverhead_data"),
 ]
+
+# 没有 danjia/tashen 标记时，根据视图名判断归属。
+# bottom/top 是担架的底视/俯视，front/side 是塔身视图。
+UNMARKED_VIEW_OWNER = {
+    "bottom": "danjia",
+    "top": "danjia",
+    "front": "tashen",
+    "side": "tashen",
+}
 
 # 边缘离群检测参数:间隙超过 max(EDGE_MIN_GAP, EDGE_GAP_FACTOR*常规间距) 视为离群
 EDGE_GAP_FACTOR = 3.0
@@ -141,17 +167,35 @@ def group_by_prefix(files):
     return groups
 
 
+def component_for_file(name):
+    """判断文件属于担架还是塔身。
+
+    显式的 danjia/tashen 标记优先，因此既支持 01_top.txt，
+    也支持 01_top_danjia.txt + 01_top_tashen.txt 这种拆分后的命名。
+    """
+    stem = os.path.splitext(name)[0].lower()
+    tokens = stem.split("_")
+    if "danjia" in tokens:
+        return "danjia"
+    if "tashen" in tokens:
+        return "tashen"
+    if len(tokens) >= 2:
+        return UNMARKED_VIEW_OWNER.get(tokens[1])
+    return None
+
+
 def read_content(path):
     """读取文件内容"""
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
 
-def merge_files(file_names, out_path, renames=None, drops=None, drop_outliers=False):
+def merge_files(src_dir, file_names, out_path, renames=None, drops=None,
+                drop_outliers=False):
     """把多个文件内容合并写入 out_path,可选删除数据块、做变量名替换、剔除离群杆件"""
     parts = []
     for name in sorted(file_names):
-        content = read_content(os.path.join(SRC_DIR, name))
+        content = read_content(os.path.join(src_dir, name))
         if drops:
             content = drop_data_blocks(content, drops)
         if renames:
@@ -167,41 +211,67 @@ def merge_files(file_names, out_path, renames=None, drops=None, drop_outliers=Fa
         f.write("\n".join(parts))
 
 
-def main():
-    if not os.path.isdir(SRC_DIR):
-        raise SystemExit(f"源目录不存在: {SRC_DIR}")
+def output_suffix(src_name):
+    """从源目录名提取数字后缀,如 T7833 -> 7833、7837 -> 7837。取不到则用原名。"""
+    m = re.search(r"\d+", src_name)
+    return m.group(0) if m else src_name
 
-    os.makedirs(TASHEN_DIR, exist_ok=True)
-    os.makedirs(DANJIA_DIR, exist_ok=True)
 
-    files = [f for f in os.listdir(SRC_DIR)
-             if os.path.isfile(os.path.join(SRC_DIR, f)) and f.endswith(".txt")]
+def organize_dir(src_name):
+    """整理单个源目录,输出到带后缀的 tashen-/danjia- 目录。"""
+    src_dir = os.path.join(BASE_DIR, src_name)
+    if not os.path.isdir(src_dir):
+        print(f"[跳过] 源目录不存在: {src_dir}")
+        return
+
+    suffix = output_suffix(src_name)
+    tashen_dir = os.path.join(BASE_DIR, f"tashen-{suffix}")
+    danjia_dir = os.path.join(BASE_DIR, f"danjia-{suffix}")
+    os.makedirs(tashen_dir, exist_ok=True)
+    os.makedirs(danjia_dir, exist_ok=True)
+
+    print(f"=== 整理 {src_name} -> tashen-{suffix} / danjia-{suffix} ===")
+
+    files = [f for f in os.listdir(src_dir)
+             if os.path.isfile(os.path.join(src_dir, f)) and f.endswith(".txt")]
     groups = group_by_prefix(files)
 
     for prefix, names in sorted(groups.items()):
         # 该前缀下只有一个文件 -> 直接复制到 tashen
         if len(names) == 1:
-            src = os.path.join(SRC_DIR, names[0])
-            dst = os.path.join(TASHEN_DIR, names[0])
+            src = os.path.join(src_dir, names[0])
+            dst = os.path.join(tashen_dir, names[0])
             shutil.copy2(src, dst)
-            print(f"[复制] {names[0]} -> tashen/{names[0]}")
+            print(f"[复制] {names[0]} -> tashen-{suffix}/{names[0]}")
             continue
 
-        # 多文件 -> 分别归入 danjia / tashen 组并合并
-        danjia_files = [n for n in names if "danjia" in n or "top" in n]
-        tashen_files = [n for n in names if "tashen" in n or "side" in n]
+        # 按部件分组：显式 danjia/tashen 标记优先，否则按视图归属。
+        classified = {"danjia": [], "tashen": []}
+        for name in names:
+            component = component_for_file(name)
+            if component:
+                classified[component].append(name)
+            else:
+                print(f"[警告] 无法判断归属，已跳过: {name}")
+        danjia_files = classified["danjia"]
+        tashen_files = classified["tashen"]
 
         if danjia_files:
-            out = os.path.join(DANJIA_DIR, f"{prefix}.txt")
-            merge_files(danjia_files, out, renames=DANJIA_RENAMES)
-            print(f"[合并] danjia/{prefix}.txt <- {sorted(danjia_files)}")
+            out = os.path.join(danjia_dir, f"{prefix}.txt")
+            merge_files(src_dir, danjia_files, out, renames=DANJIA_RENAMES)
+            print(f"[合并] danjia-{suffix}/{prefix}.txt <- {sorted(danjia_files)}")
 
         if tashen_files:
-            out = os.path.join(TASHEN_DIR, f"{prefix}.txt")
-            merge_files(tashen_files, out, renames=TASHEN_RENAMES, drops=TASHEN_DROPS,
-                        drop_outliers=True)
-            print(f"[合并] tashen/{prefix}.txt <- {sorted(tashen_files)}")
+            out = os.path.join(tashen_dir, f"{prefix}.txt")
+            merge_files(src_dir, tashen_files, out, renames=TASHEN_RENAMES,
+                        drops=TASHEN_DROPS, drop_outliers=True)
+            print(f"[合并] tashen-{suffix}/{prefix}.txt <- {sorted(tashen_files)}")
 
+
+def main():
+    src_names = sys.argv[1:] or [DEFAULT_SRC]
+    for src_name in src_names:
+        organize_dir(src_name)
     print("整理完成。")
 
 
