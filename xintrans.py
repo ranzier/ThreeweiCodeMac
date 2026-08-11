@@ -598,6 +598,125 @@ def find_missing_members(ganjian, coordinates_data, main_rod_ids):
     return missing_members, existing_member_ids
 
 
+def generate_third_class_nodes_and_members(
+    coordinates_data,
+    drawing_id,
+    newx,
+    pj,
+    view_member_to_nodes,
+    rod_a_id,
+    rod_b_id,
+    judge_pj_index,
+    value_pj_index,
+    main_rod_endpoints,
+    id_prefix,
+    node_id_groups,
+    symmetry_type,
+    yuzhi,
+):
+    """为单个视图生成尚未覆盖的三类节点和三类杆件。
+
+    保持原底视图三类处理算法不变；视图间不同的一类杆件、拼接点映射和
+    节点编号段由调用方传入。
+    """
+    # 仅使用当前视图刚生成的二类杆件。全局 ganjian 会累积其他视图和
+    # 其他担架的数据，直接参与比对会让相同杆件编号互相干扰。
+    view_members = [
+        {
+            "member_id": str(member_id),
+            "node1_id": node_list[0],
+            "node2_id": node_list[1],
+        }
+        for member_id, node_list in view_member_to_nodes.items()
+        if len(node_list) == 2
+    ]
+    missing_members, existing_member_ids = find_missing_members(
+        view_members, coordinates_data, [rod_a_id, rod_b_id]
+    )
+
+    node_existing = get_jiaodian_on_ganjian_by_missing_members(
+        coordinates_data,
+        missing_members,
+        existing_member_ids,
+        drawing_id,
+        rod_a_id,
+        rod_b_id,
+        pj,
+        yuzhi,
+    )
+
+    real_node_existing = get_real_x_of_missing_nodes(
+        coordinates_data,
+        drawing_id,
+        node_existing,
+        newx,
+        pj,
+        rod_a_id,
+        judge_pj_index,
+        value_pj_index,
+    )
+
+    member_endpoints = {}
+    for member in view_members:
+        member_id = str(member.get("member_id"))
+        if member_id not in member_endpoints:
+            member_endpoints[member_id] = (
+                member.get("node1_id"),
+                member.get("node2_id"),
+            )
+    member_endpoints.update({
+        str(member_id): endpoints
+        for member_id, endpoints in main_rod_endpoints.items()
+    })
+
+    first_group, overflow_group = node_id_groups
+    new_node_cnt = 0
+    real_node_existing_2d_nodes = []
+    for member_id, points in (real_node_existing or {}).items():
+        endpoints = member_endpoints.get(str(member_id))
+        if not endpoints:
+            continue
+        node1_id, node2_id = endpoints
+        for item in points:
+            new_node_cnt += 1
+            if new_node_cnt > 9:
+                node_seq = new_node_cnt - 9
+                node_id = f"{id_prefix}{overflow_group}{node_seq}0"
+            else:
+                node_id = f"{id_prefix}{first_group}{new_node_cnt}0"
+            jiedian.append({
+                "node_id": node_id,
+                "node_type": 12,
+                "symmetry_type": symmetry_type,
+                "X": item["x_3d"],
+                "Y": f"1{node1_id}",
+                "Z": f"1{node2_id}",
+            })
+            real_node_existing_2d_nodes.append({
+                "node_id": node_id,
+                "point_2d": item.get("point_2d"),
+            })
+
+    node_to_members = find_ganjian_by_nodes(
+        real_node_existing_2d_nodes, coordinates_data, yuzhi
+    )
+    member_to_nodes = defaultdict(list)
+    for node_id, member_list in node_to_members.items():
+        for member_id in member_list:
+            member_to_nodes[member_id].append(node_id)
+
+    missing_member_ids = {str(member_id) for member_id in missing_members}
+    for member_id, node_list in member_to_nodes.items():
+        unique_node_list = list(dict.fromkeys(node_list))
+        if str(member_id) in missing_member_ids and len(unique_node_list) == 2:
+            ganjian.append({
+                "member_id": str(member_id),
+                "node1_id": unique_node_list[0],
+                "node2_id": unique_node_list[1],
+                "symmetry_type": symmetry_type,
+            })
+
+
 def detect_main_rods_by_type(coordinates_data, drawing_type):
     """统一使用通用规则识别一类杆件；保留 drawing_type 参数以兼容现有调用。"""
     return detect_main_rods_enhanced(coordinates_data)
@@ -972,6 +1091,16 @@ def trans(
                     "symmetry_type": 2
                 })
 
+        generate_third_class_nodes_and_members(
+            coordinatesFront_data, drawing_id, newx, pj, member_to_nodes,
+            rod_front_a, rod_front_b, 1, 1,
+            {
+                rod_front_a: (pj[drawing_id - 1][1][0], f"{jiandian_id + 20}"),
+                rod_front_b: (pj[drawing_id - 1][0][0], f"{jiandian_id + 20}"),
+            },
+            id_prefix, ("691", "791"), 2, yuzhi,
+        )
+
         ############################################################################################################
         # 3. 底视图
         ############################################################################################################
@@ -1063,114 +1192,15 @@ def trans(
                     "symmetry_type": 0
                 })
 
-        #-----------------------------找到三类节点--------------------------------------------------------------------------#
-
-        # 找出底视图中尚未被二类处理覆盖的剩余杆件（三类杆件）及其二维坐标
-        missing_members, existing_member_ids = find_missing_members(ganjian, coordinatesBottom_data, main_rod_ids)
-
-        # 计算三类杆件端点落在已有杆件（一类+二类）上的交点二维坐标
-        node_existing = get_jiaodian_on_ganjian_by_missing_members(
-            coordinatesBottom_data,
-            missing_members,
-            existing_member_ids,
-            drawing_id,
-            rod_101_id,
-            rod_102_id,
-            pj,
-            yuzhi,
+        generate_third_class_nodes_and_members(
+            coordinatesBottom_data, drawing_id, newx, pj, member_to_nodes,
+            rod_101_id, rod_102_id, 1, 1,
+            {
+                rod_101_id: (pj[drawing_id - 1][1][0], f"{jiandian_id + 20}"),
+                rod_102_id: (str(int(pj[drawing_id - 1][1][0]) + 2), f"{jiandian_id + 22}"),
+            },
+            id_prefix, ("491", "591"), 0, yuzhi,
         )
-
-        # 将交点的二维坐标按比例映射为真实三维X坐标
-        real_node_existing = get_real_x_of_missing_nodes(
-            coordinatesBottom_data,
-            drawing_id,
-            node_existing,
-            newx,
-            pj,
-            rod_101_id,
-            1,
-            1,
-            )
-
-        #-----------------------------生成三类节点--------------------------------------------------------------------------#
-
-        # 构建杆件编号->两端节点编号的映射表，用于确定三类节点的Y/Z引用值
-        member_endpoints = {}
-        for member in ganjian:
-            member_id = str(member.get("member_id"))
-            if member_id not in member_endpoints:
-                member_endpoints[member_id] = (member.get("node1_id"), member.get("node2_id"))
-        # 一类杆件的端点需要单独指定（因为前面删除过再重建）
-        member_endpoints[str(rod_102_id)] = (
-            str(int(pj[drawing_id - 1][1][0]) + 2),
-            f"{jiandian_id + 22}",
-        )
-        member_endpoints[str(rod_101_id)] = (
-            str(int(pj[drawing_id - 1][1][0])),
-            f"{jiandian_id + 20}",
-        )
-
-        new_node_cnt = 0
-        real_node_existing_2d_nodes = []
-
-        for member_id, points in (real_node_existing or {}).items():
-            # 获取该交点所在杆件的两端节点编号，作为三类节点的Y/Z引用
-            endpoints = member_endpoints.get(str(member_id))
-            if not endpoints:
-                continue
-            node1_id, node2_id = endpoints
-            for item in points:
-                new_node_cnt += 1
-                # 编号规则：前9个用 {drawing_id}491X0，超过9个用 {drawing_id}591X0
-                if new_node_cnt > 9:
-                    node_seq = new_node_cnt - 9
-                    node_id = f"{id_prefix}591{node_seq}0"
-                else:
-                    node_id = f"{id_prefix}491{new_node_cnt}0"
-                jiedian.append({
-                    "node_id": node_id,
-                    "node_type": 12,
-                    "symmetry_type": 0,
-                    "X": item["x_3d"],
-                    "Y": f"1{node1_id}",
-                    "Z": f"1{node2_id}",
-                })
-                # 同时记录二维坐标，供后续生成三类杆件时匹配使用
-                real_node_existing_2d_nodes.append({
-                    "node_id": node_id,
-                    "point_2d": item.get("point_2d"),
-                })
-
-
-        #-----------------------------生成三类杆件--------------------------------------------------------------------------#
-
-        # 通过三类节点的二维坐标反查其属于哪些杆件
-        node_to_members = find_ganjian_by_nodes(
-            real_node_existing_2d_nodes,
-            coordinatesBottom_data,
-            yuzhi,
-        )
-        # 反转映射：杆件编号 -> 该杆件上的节点列表
-        member_to_nodes = defaultdict(list)
-        for node_id, member_list in node_to_members.items():
-            for member_id in member_list:
-                member_to_nodes[member_id].append(node_id)
-
-        # 只有恰好两个端点的杆件才是合法的三类杆件
-        for member_id, node_list in member_to_nodes.items():
-            if len(node_list) == 2:
-                ganjian.append({
-                    "member_id": str(member_id),
-                    "node1_id": node_list[0],
-                    "node2_id": node_list[1],
-                    "symmetry_type": 0,
-                })
-       
-
-
-
-
-
 
         ############################################################################################################
         # 4. 顶视图
@@ -1258,6 +1288,16 @@ def trans(
                     "node2_id": node_list[1],
                     "symmetry_type": 0
                 })
+
+        generate_third_class_nodes_and_members(
+            coordinatesOverhead_data, drawing_id, newx, pj, member_to_nodes,
+            rod_103_id, rod_104_id, 1, 0,
+            {
+                rod_103_id: (pj[drawing_id - 1][0][0], f"{jiandian_id + 20}"),
+                rod_104_id: (str(int(pj[drawing_id - 1][0][0]) + 2), f"{jiandian_id + 22}"),
+            },
+            id_prefix, ("891", "991"), 0, yuzhi,
+        )
 
         ############################################################################################################
         # 5. 添加一类杆件
@@ -1430,6 +1470,16 @@ def trans(
                     "symmetry_type": 2
                 })
 
+        generate_third_class_nodes_and_members(
+            coordinatesFront_data, drawing_id, newx, pj, member_to_nodes,
+            rod_front_a, rod_front_b, 1, 0,
+            {
+                rod_front_a: (pj[drawing_id - 1][0][0], f"{jiandian_id + 20}"),
+                rod_front_b: (pj[drawing_id - 1][1][0], f"{jiandian_id + 20}"),
+            },
+            id_prefix, ("691", "791"), 2, yuzhi,
+        )
+
         ############################################################################################################
         # 3. 顶视图
         ############################################################################################################
@@ -1519,6 +1569,16 @@ def trans(
                     "node2_id": node_list[1],
                     "symmetry_type": 0
                 })
+
+        generate_third_class_nodes_and_members(
+            coordinatesOverhead_data, drawing_id, newx, pj, member_to_nodes,
+            rod_101_id, rod_102_id, 1, 1,
+            {
+                rod_101_id: (pj[drawing_id - 1][0][0], f"{jiandian_id + 20}"),
+                rod_102_id: (str(int(pj[drawing_id - 1][0][0]) + 2), f"{jiandian_id + 22}"),
+            },
+            id_prefix, ("891", "991"), 0, yuzhi,
+        )
 
         ############################################################################################################
         # 4. 底视图
@@ -1625,97 +1685,16 @@ def trans(
                     "node2_id": node_list[1],
                     "symmetry_type": 0
                 })
-        #
-        #     # -----------------------------找到三类节点--------------------------------------------------------------------------#
-        #
-        # missing_members, existing_member_ids = find_missing_members(ganjian, coordinatesBottom_data, main_rod_ids)
-        #
-        # node_existing = get_jiaodian_on_ganjian_by_missing_members(
-        #     coordinatesBottom_data,
-        #     missing_members,
-        #     existing_member_ids,
-        #     drawing_id,
-        #     rod_103_id,
-        #     rod_104_id,
-        #     pj,
-        #     yuzhi,
-        # )
-        #
-        # real_node_existing = get_real_x_of_missing_nodes(
-        #     coordinatesBottom_data,
-        #     drawing_id,
-        #     node_existing,
-        #     newx,
-        #     pj,
-        #     rod_103_id,
-        #     1,
-        #     0,
-        # )
-        #
-        # # -----------------------------生成三类节点--------------------------------------------------------------------------#
-        #
-        # member_endpoints = {}
-        # for member in ganjian:
-        #     member_id = str(member.get("member_id"))
-        #     if member_id not in member_endpoints:
-        #         member_endpoints[member_id] = (member.get("node1_id"), member.get("node2_id"))
-        # member_endpoints[str(rod_104_id)] = (
-        #     str(int(pj[drawing_id - 1][1][0]) + 2),
-        #     f"{jiandian_id + 22}",
-        # )
-        # member_endpoints[str(rod_103_id)] = (
-        #     str(int(pj[drawing_id - 1][1][0])),
-        #     f"{jiandian_id + 20}",
-        # )
-        #
-        # new_node_cnt = 0
-        # real_node_existing_2d_nodes = []
-        #
-        # for member_id, points in (real_node_existing or {}).items():
-        #     endpoints = member_endpoints.get(str(member_id))
-        #     if not endpoints:
-        #         continue
-        #     node1_id, node2_id = endpoints
-        #     for item in points:
-        #         new_node_cnt += 1
-        #         if new_node_cnt > 9:
-        #             node_seq = new_node_cnt - 9
-        #             node_id = f"{id_prefix}591{node_seq}0"
-        #         else:
-        #             node_id = f"{id_prefix}491{new_node_cnt}0"
-        #         jiedian.append({
-        #             "node_id": node_id,
-        #             "node_type": 12,
-        #             "symmetry_type": 0,
-        #             "X": item["x_3d"],
-        #             "Y": f"1{node1_id}",
-        #             "Z": f"1{node2_id}",
-        #         })
-        #         real_node_existing_2d_nodes.append({
-        #             "node_id": node_id,
-        #             "point_2d": item.get("point_2d"),
-        #         })
-        #
-        # # -----------------------------生成三类杆件--------------------------------------------------------------------------#
-        #
-        # node_to_members = find_ganjian_by_nodes(
-        #     real_node_existing_2d_nodes,
-        #     coordinatesBottom_data,
-        #     yuzhi,
-        # )
-        # member_to_nodes = defaultdict(list)
-        # for node_id, member_list in node_to_members.items():
-        #     for member_id in member_list:
-        #         member_to_nodes[member_id].append(node_id)
-        #
-        # for member_id, node_list in member_to_nodes.items():
-        #     if len(node_list) == 2:
-        #         ganjian.append({
-        #             "member_id": str(member_id),
-        #             "node1_id": node_list[0],
-        #             "node2_id": node_list[1],
-        #             "symmetry_type": 0,
-        #         })
+
+        generate_third_class_nodes_and_members(
+            coordinatesBottom_data, drawing_id, newx, pj, member_to_nodes,
+            rod_103_id, rod_104_id, 1, 0,
+            {
+                rod_103_id: (pj[drawing_id - 1][1][0], f"{jiandian_id + 20}"),
+                rod_104_id: (str(int(pj[drawing_id - 1][1][0]) + 2), f"{jiandian_id + 22}"),
+            },
+            id_prefix, ("491", "591"), 0, yuzhi,
+        )
 
         ############################################################################################################
         # 5. 添加一类杆件
