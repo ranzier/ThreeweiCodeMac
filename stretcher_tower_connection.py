@@ -3,7 +3,7 @@
 
 拼接点这样识别：
 1. 根据正视图两根一类杆件的展开/收拢关系确定塔身连接侧，再按连接端Y确定上下杆；
-2. 到塔身正视图的**横杆**里找相同二维坐标的端点，拿到该横杆的塔身 member_id；
+2. 到塔身正视图的**横杆**里找二维距离在阈值内的最近端点，拿到该横杆的塔身 member_id；
 3. 取该横杆 ganjian 行的 -x 左侧节点（node1）和 +x 右侧节点（node2）作为两侧拼接点，
    三维坐标优先从塔身 jiedian 取；任意一侧缺少数值坐标时，由另一侧镜像补齐。
 
@@ -113,7 +113,7 @@ def _is_horizontal(seg, tol_y=20.0):
 
 def _match_tashen_horizontal(pt2d, tashen_fronts, tol):
     """
-    在塔身正视图的**横杆**里找与 pt2d 重合的端点。
+    在塔身正视图的**横杆**里找与 pt2d 二维距离在 tol 内的最近端点。
     只匹配横杆，避免斜杆（如 113）在同一二维点上的深度歧义与悬空节点。
     tashen_fronts: [(member_id, [(x1,y1),(x2,y2)]), ...]
     返回 (塔身member_id, 重合端点index)。
@@ -127,7 +127,10 @@ def _match_tashen_horizontal(pt2d, tashen_fronts, tol):
             if d <= tol and (best is None or d < best[0]):
                 best = (d, mid, idx)
     if best is None:
-        raise KeyError(f"塔身正视图横杆中未匹配到担架拼接点二维坐标 {pt2d}")
+        raise KeyError(
+            f"塔身正视图横杆中未匹配到担架拼接点二维坐标 {pt2d}"
+            f"（匹配距离阈值：{tol}）"
+        )
     return best[1], best[2]
 
 
@@ -156,7 +159,7 @@ def _node_xyz_from_jiedian(node_id, node_xyz):
         return None  # node_type 12 的引用式坐标（非数值）不可用
 
 
-def build_stretcher_tower_pinjie(danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen, tol=1.0,
+def build_stretcher_tower_pinjie(danjia_dir, tashen_dir, jiedian_tashen, ganjian_tashen, tol=50.0,
                                  longest_main_rods=False):
     """
     为构建 xintrans 消费格式的 pinjie（长度 = 担架数 × 4）。
@@ -164,7 +167,7 @@ def build_stretcher_tower_pinjie(danjia_dir, tashen_dir, jiedian_tashen, ganjian
 
     识别规则：
       两根一类杆件展开较宽的一侧为塔身连接侧；连接端Y较小者为上杆、较大者为下杆。
-      两个连接端点 -> 塔身正视图**横杆**上的重合端点 -> 分别取该横杆 -x 左侧节点(node1)
+      两个连接端点 -> 塔身正视图**横杆**上阈值内的最近端点 -> 分别取该横杆 -x 左侧节点(node1)
       和 +x 右侧节点(node2)。
       三维坐标优先直接查 jiedian；任意一侧查不到时，用另一侧坐标关于 X=0 镜像补齐。
 
@@ -173,7 +176,7 @@ def build_stretcher_tower_pinjie(danjia_dir, tashen_dir, jiedian_tashen, ganjian
         tashen_dir: 塔身坐标目录（含正视图 txt）
         jiedian_tashen: 塔身节点列表，用于取连接点三维坐标
         ganjian_tashen: 塔身杆件列表，用于把横杆映射回 +x 连接节点编号
-        tol: 二维坐标匹配容差（原始坐标为整数，默认 1.0 兜底）
+        tol: 二维坐标欧氏距离匹配阈值（含边界，默认 50.0）
         longest_main_rods: 已弃用的兼容参数；一类杆件始终使用通用规则识别。
     """
     # 汇总塔身所有正视图杆件的二维坐标
