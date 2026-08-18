@@ -1059,20 +1059,11 @@ def trans(
         }
         jiedian.append(new_node)
         if drawing_type == "ZhiLiu" and drawing_id in (4, 6):
-            upper_remote_plan_xyz = calc_jiandian_xyz(
-                coordinatesOverhead_data,
-                drawing_id,
-                pj,
-                0,
-                rod_103_id,
-                rod_104_id,
-            )
             zhiliu_front_class1 = build_zhiliu_near_front_class1(
                 coordinatesFront_data,
                 pj[drawing_id - 1],
                 jiandian_id,
                 (newx, newy, newz),
-                upper_remote_plan_xyz,
                 yuzhi,
             )
             zhiliu_projected_frames = (

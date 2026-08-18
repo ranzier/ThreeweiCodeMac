@@ -123,7 +123,6 @@ def build_zhiliu_near_front_class1(
     connection_group,
     jiandian_id,
     lower_remote_xyz,
-    upper_remote_plan_xyz,
     threshold=150,
 ):
     """生成直流塔 04/06 靠塔担架正视图的一类骨架信息。"""
@@ -189,12 +188,22 @@ def build_zhiliu_near_front_class1(
         _projection_ratio(secondary_points[secondary_joint_index], diagonal_points),
     )
 
+    secondary_remote_index = 1 - secondary_joint_index
+    # 一类副杆外端的平面位置由正视图确定：将该端点投影到水平主杆，
+    # 再沿水平主杆的真实三维线段插值得到 X、Y。副杆在正视图中
+    # 近似水平，因此 Z 与副杆连接端保持一致。
+    secondary_remote_plan_xyz = _interpolate_xyz(
+        lower_endpoint_xyz[0],
+        lower_endpoint_xyz[1],
+        _projection_ratio(
+            secondary_points[secondary_remote_index], lower_points
+        ),
+    )
     upper_remote_xyz = (
-        upper_remote_plan_xyz[0],
-        upper_remote_plan_xyz[1],
+        secondary_remote_plan_xyz[0],
+        secondary_remote_plan_xyz[1],
         secondary_joint_xyz[2],
     )
-    secondary_remote_index = 1 - secondary_joint_index
 
     endpoint_ids = {
         lower_rod: [None, None],
