@@ -27,6 +27,8 @@ def _dist_point_to_line(point, line_point1, line_point2):
 
 def detect_zhiliu_near_front_class1_rods(coordinates_data, threshold=150):
     """识别靠塔担架正视图的两根一类主杆和一根一类副杆。"""
+    # 04/06 的正视图比旧图纸多一根参与骨架定位的一类副杆。先沿用原算法
+    # 找出两根最长主杆，再单独从其余杆件中识别副杆，避免改变旧识别函数。
     primary_ids = detect_main_rods_enhanced(coordinates_data)
     if len(primary_ids) != 2:
         raise ValueError("直流塔靠塔担架正视图未识别到两根一类主杆")
@@ -38,6 +40,7 @@ def detect_zhiliu_near_front_class1_rods(coordinates_data, threshold=150):
             raise ValueError(f"正视图杆件 {rod_id} 是零长度杆件")
         return abs(point2[1] - point1[1]) / length
 
+    # 竖向变化比例较小的是水平主杆，较大的是斜主杆。
     lower_rod, diagonal_rod = sorted(primary_ids, key=vertical_ratio)
     diagonal_points = coordinates_data[diagonal_rod]
     candidates = []
@@ -54,6 +57,7 @@ def detect_zhiliu_near_front_class1_rods(coordinates_data, threshold=150):
     if not candidates:
         raise ValueError("直流塔靠塔担架正视图未识别到一类副杆")
 
+    # 一类副杆近似水平、至少一端落在斜主杆上；候选中取最长杆。
     _, secondary_rod = max(candidates, key=lambda item: item[0])
     return {
         "main_rods": (lower_rod, diagonal_rod),
@@ -138,8 +142,12 @@ def build_zhiliu_near_front_class1(
     if not connection_group or len(connection_group) < 2:
         raise ValueError("直流塔靠塔担架缺少塔身连接点")
 
+    # connection_group 的固定顺序是上连接点、下连接点。04 的连接端在右侧，
+    # 06 的连接端在左侧；connection_side 根据二维杆件位置自动判断。
     tower_upper_id, tower_upper_xyz = connection_group[0]
     tower_lower_id, tower_lower_xyz = connection_group[1]
+    # 直流塔靠塔担架的一类节点编号约定：+20 为水平主杆外端，+30 为
+    # 斜主杆外端，+40 为副杆与斜主杆的连接端，+50 为副杆外端。
     lower_remote_id = str(jiandian_id + 20)
     diagonal_joint_id = str(jiandian_id + 30)
     secondary_joint_id = str(jiandian_id + 40)
@@ -153,9 +161,13 @@ def build_zhiliu_near_front_class1(
     lower_remote_index = 1 - tower_lower_index
     diagonal_joint_index = 1 - tower_upper_index
 
+    # 水平主杆连接端直接使用塔身传入的真实坐标；外端坐标由 xintrans.py
+    # 按底视图原有比例计算后通过 lower_remote_xyz 传入。
     lower_endpoint_xyz = [None, None]
     lower_endpoint_xyz[tower_lower_index] = tuple(map(float, tower_lower_xyz))
     lower_endpoint_xyz[lower_remote_index] = tuple(map(float, lower_remote_xyz))
+    # 斜主杆外端在正视图中落到水平主杆上，因此使用正视图投影比例在
+    # 水平主杆的两端真实 XYZ 之间插值，不再假设两根主杆收敛到尖点。
     diagonal_joint_xyz = _interpolate_xyz(
         lower_endpoint_xyz[0],
         lower_endpoint_xyz[1],
@@ -182,6 +194,7 @@ def build_zhiliu_near_front_class1(
         raise ValueError(
             f"直流塔一类副杆 {secondary_rod} 没有端点落在斜主杆 {diagonal_rod} 上"
         )
+    # 副杆与斜主杆相接端同样按正视图比例，在斜主杆真实 XYZ 上插值。
     secondary_joint_xyz = _interpolate_xyz(
         diagonal_endpoint_xyz[0],
         diagonal_endpoint_xyz[1],
@@ -205,6 +218,8 @@ def build_zhiliu_near_front_class1(
         secondary_joint_xyz[2],
     )
 
+    # endpoint_ids/endpoint_xyz 均保持与原二维端点列表相同的下标顺序，
+    # 后续正视图、底视图和顶视图可以直接复用通用的端点标记流程。
     endpoint_ids = {
         lower_rod: [None, None],
         diagonal_rod: [None, None],
@@ -297,6 +312,8 @@ def build_zhiliu_outer_front_class1(
     if vertical_ratio(lower_rod) > 0.1 or vertical_ratio(upper_rod) > 0.1:
         raise ValueError("直流塔外层担架正视图的一类主杆不是近似水平杆")
 
+    # 03 的连接端在右侧、05 的连接端在左侧。connection_group 来自已经
+    # 完成重建的 04/06，而不是塔身的原始拼接点。
     upper_connection_id, upper_connection_xyz = connection_group[0]
     lower_connection_id, lower_connection_xyz = connection_group[1]
     lower_remote_id = str(jiandian_id + 20)
@@ -304,6 +321,8 @@ def build_zhiliu_outer_front_class1(
 
     endpoint_ids = {}
     endpoint_xyz = {}
+    # 两根主杆的内端沿用 04/06 传来的真实 XYZ；两个外端分别使用
+    # 底视图和顶视图按旧逻辑算出的真实 XYZ，从而保留四个独立端点。
     for rod_id, connection_id, connection_xyz, remote_id, remote_xyz in (
         (
             lower_rod, lower_connection_id, lower_connection_xyz,
@@ -370,6 +389,7 @@ def build_zhiliu_near_front_second_class(
     endpoint_xyz = class1_result["endpoint_xyz"]
     reference_endpoint_ids = class1_result["reference_endpoint_ids"]
 
+    # 每根一类边界杆使用独立节点号段，避免两片框架的节点编号冲突。
     boundary_groups = {
         lower_rod: "191",
         diagonal_rod: "193",
@@ -386,6 +406,7 @@ def build_zhiliu_near_front_second_class(
     created_nodes = []
 
     def resolve_boundary_node(rod_id, point):
+        # 两片框架可能在水平主杆上命中同一点；先按二维距离复用节点。
         for existing_point, node_id in known_nodes:
             if _dist_points(point, existing_point) < threshold:
                 return node_id
@@ -400,6 +421,8 @@ def build_zhiliu_near_front_second_class(
             endpoint_xyz[rod_id][0], endpoint_xyz[rod_id][1], ratio
         )
         reference_start, reference_end = reference_endpoint_ids[rod_id]
+        # 延续旧数据格式：X 保存插值得到的真实值，Y/Z 保存该节点所在
+        # 一类杆的两个真实端点引用，由下游根据引用恢复完整三维坐标。
         created_nodes.append({
             "node_id": node_id,
             "node_type": 12,
@@ -413,6 +436,7 @@ def build_zhiliu_near_front_second_class(
 
     members_by_id = {}
     member_to_nodes = {}
+    # 分别搜索“水平主杆—斜主杆”和“水平主杆—副杆”两片框架。
     for boundary_a, boundary_b in (
         (lower_rod, diagonal_rod),
         (lower_rod, secondary_rod),
@@ -443,6 +467,7 @@ def build_zhiliu_near_front_second_class(
                 resolve_boundary_node(boundary_b, point_b),
             )
             member_key = str(member_id)
+            # 同一杆件可能同时落入两片框架的阈值范围，按原杆件编号去重。
             if member_key in members_by_id:
                 continue
             member_to_nodes[member_id] = list(node_ids)
@@ -511,6 +536,7 @@ def build_zhiliu_outer_front_second_class(
 
     members = []
     member_to_nodes = {}
+    # 03/05 只有上下两根水平一类主杆，二类杆只需搜索跨接两杆的杆件。
     lower_segment = coordinates_front_data[lower_rod]
     upper_segment = coordinates_front_data[upper_rod]
     for member_id, member_points in coordinates_front_data.items():
@@ -562,6 +588,8 @@ def build_zhiliu_near_projected_class1_frames(class1_result):
     lower_rod, diagonal_rod = class1_result["roles"]["main_rods"]
 
     def frame_for(front_rod_id):
+        # 第一根投影杆复用正视图一类节点；另一根杆使用节点号 +2，
+        # 表示关于担架对称轴生成的对应节点，与原三视图编号规则一致。
         primary_ids = tuple(
             str(node_id)
             for node_id in class1_result["endpoint_ids"][front_rod_id]

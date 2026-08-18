@@ -944,6 +944,8 @@ def trans(
         pj.append(negative_group)
 
 
+    # 04/06 完成后会把各自外端连接点写回原始 pj 槽位，使随后执行的
+    # 03/05 把这些点当作内端连接点；其他图纸类型不进入此分支。
     if drawing_type == "ZhiLiu" and zhiliu_pj_overrides:
         pj = list(pj)
         for pj_index, connection_group in zhiliu_pj_overrides.items():
@@ -974,6 +976,8 @@ def trans(
     elif drawing_type == "ZhiLiu":
         # 直流塔按 01、02、04、03、06、05 执行。
         # 03/05 不直接连接塔身，分别复用 04/06 所在侧的连接点组。
+        # 此处数组仍按实际图号 01..06 排列，所以 03/04 共用 pj[3]，
+        # 05/06 共用 pj[2]；外层担架执行前对应槽位会被上方覆盖。
         pj = [pj[i] for i in (1, 0, 3, 3, 2, 2)]
 
     pj = align_connection_groups(pj, drawing_id, connection_index)
@@ -1058,6 +1062,8 @@ def trans(
             "Z": round(newz,3),
         }
         jiedian.append(new_node)
+        # 04/06 是直接靠塔的内层担架：保留底视图算出的水平主杆外端，
+        # 再由专用模块根据正视图建立两根主杆、一根副杆及其真实端点。
         if drawing_type == "ZhiLiu" and drawing_id in (4, 6):
             zhiliu_front_class1 = build_zhiliu_near_front_class1(
                 coordinatesFront_data,
@@ -1075,6 +1081,8 @@ def trans(
             main_rod_ids.append(
                 zhiliu_front_class1["roles"]["secondary_rod"]
             )
+        # 03/05 是复合担架的外层：内端使用 04/06 回传的连接点，
+        # 上、下外端仍分别由顶视图、底视图的原有尖点算法提供。
         elif drawing_type == "ZhiLiu" and drawing_id in (3, 5):
             upper_remote_xyz = calc_jiandian_xyz(
                 coordinatesOverhead_data,
@@ -1105,6 +1113,8 @@ def trans(
         ############################################################################################################
 
         zhiliu_front_second_class = None
+        # 只要专用一类骨架存在，正视图的二类结构也交给直流塔模块；
+        # 普通图纸继续进入下面完全不变的双主杆通用流程。
         if zhiliu_front_class1 is not None:
             if drawing_id in (3, 5):
                 zhiliu_front_second_class = (
@@ -1281,6 +1291,8 @@ def trans(
 
         jiaodian_101,jiaodian_102 = get_jiaodian_on_ganjian(coordinatesBottom_data,drawing_id, pj, rod_101_id,rod_102_id, yuzhi)
 
+        # 直流塔底视图仍复用原节点/杆件生成流程，仅把几何基准替换为
+        # 正视图水平主杆的真实端点及其 +2 对称端点。
         if zhiliu_projected_frames is not None:
             bottom_frame = zhiliu_projected_frames["bottom"]
             real_101 = get_real_x_between_xyz_endpoints(
@@ -1422,6 +1434,7 @@ def trans(
 
         jiaodian_103,jiaodian_104 = get_jiaodian_on_ganjian(coordinatesOverhead_data,drawing_id, pj, rod_103_id,rod_104_id, yuzhi)
 
+        # 直流塔顶视图与底视图处理方式相同，但几何基准取正视图斜主杆。
         if zhiliu_projected_frames is not None:
             overhead_frame = zhiliu_projected_frames["overhead"]
             real_103 = get_real_x_between_xyz_endpoints(
@@ -1569,6 +1582,8 @@ def trans(
             str(rod_front_a),
             str(rod_front_b),
         }
+        # 专用流程可能已在二类/三类搜索中匹配到一类杆；先统一移除，
+        # 再按已经确定的真实端点重建，防止错误端点或重复杆件残留。
         if zhiliu_front_class1 is not None:
             secondary_rod = zhiliu_front_class1["roles"].get(
                 "secondary_rod"
@@ -2061,6 +2076,8 @@ def trans(
             if j.get("symmetry_type") == 2:
                 j["symmetry_type"] = 4
 
+    # 仅直流塔 03/04/05/06 专用骨架会返回连接组。work() 只使用
+    # 04/06 的返回值继续向外传递，普通担架仍返回 None。
     if zhiliu_front_class1 is not None:
         return zhiliu_front_class1.get("outer_connection_group")
     return None
@@ -2072,6 +2089,7 @@ def work(file_path, data, drawing_type, tashen_dir=None):
 
     drawings = list_stretcher_drawings(file_path)
     if drawing_type == "ZhiLiu":
+        # 复合担架必须先重建靠塔部分再重建外层部分，才能传递真实连接点。
         execution_order = {
             drawing_id: order
             for order, drawing_id in enumerate((1, 2, 4, 3, 6, 5))
@@ -2098,6 +2116,8 @@ def work(file_path, data, drawing_type, tashen_dir=None):
             zhiliu_pj_overrides,
         )
         if drawing_type == "ZhiLiu" and outer_connection_group is not None:
+            # 04 的外端覆盖 03 使用的原始 pj[3]，06 的外端覆盖 05 使用
+            # 的原始 pj[2]；下一次 trans() 会在 pj 重排前应用该覆盖。
             if drawing_id == 4:
                 zhiliu_pj_overrides[3] = outer_connection_group
             elif drawing_id == 6:
