@@ -15,7 +15,7 @@ import tran2dto3d
 
 
 
-# Mac 路径配置
+# 鼓楼
 # danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/1E2-SDJ"
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/1E2-SDJ"
 # danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/J1"
@@ -26,22 +26,36 @@ import tran2dto3d
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/J4"
 # danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/Z1"
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/Z1"
+
+# 上字
 # danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/T7833"
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/T7833"
 # danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/781"
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/781"
+
+# 干字
 # danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/7837"
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/7837"
-danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/Y7850"
-tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/Y7850"
+
+# 羊角
+# danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/Y7850"
+# tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/Y7850"
+
+# 直流
+danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/JC27302"
+tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/JC27302"
+
 project_path = "/Users/bilibili/Desktop/threewei/Sanwei/output_path"
 savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
 
 
+# todo: 1. 完成04，06正视图一类杆件和一类节点      ✅
+# todo: 2. 完成04，06正视图二类杆件和二类节点     ✅
+# todo: 3. 完成04，06俯视图和仰视图             ✅
+# todo: 4. 完成03，05正视图
+# todo: 5. 完成03，05俯视图和仰视图
 
-
-
-
+# todo: 测试原来的图纸有没有影响
 
 
 """
@@ -50,7 +64,7 @@ drawing_type：图纸类型
 1. GuLou(鼓楼型)：1E2-SDJ、J1、J3、J4、Z1
 2. ShangZi(上字型)：T7833、781
 3. GanZi(干字型)：7837
-4. ZhiLiu(直流塔)
+4. ZhiLiu(直流塔)：JC27302
 5. YangJiao(羊角型): Y7850
 """
 
@@ -62,8 +76,8 @@ tran2dto3d.tran2dto3d( danjia_dir=danjia_dir,
         # drawing_type ="GuLou")
         # drawing_type = "ShangZi")
         # drawing_type = "GanZi")
-        drawing_type = "YangJiao")
-        # drawing_type = "ZhiLiu")
+        # drawing_type = "YangJiao")
+        drawing_type = "ZhiLiu")
 
 
 # 1E2-SDJ依次输入：0  911  0.9

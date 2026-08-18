@@ -3,6 +3,13 @@ import os
 from collections import defaultdict
 from get_first_ganjian_id import detect_main_rods_enhanced
 from stretcher_tower_connection import get_main_rod_connection_geometry
+from zhiliu_near_front_reconstruction import (
+    build_zhiliu_near_front_class1,
+    build_zhiliu_near_front_second_class,
+    build_zhiliu_near_projected_class1_frames,
+    build_zhiliu_outer_front_class1,
+    build_zhiliu_outer_front_second_class,
+)
 
 
 def count_txt_files(folder_path):
@@ -499,6 +506,33 @@ def get_real_x_of_jiaodian(coordinates_data, drawing_id, filtered, newx, pj, rod
 
     return real
 
+
+def get_real_x_between_xyz_endpoints(
+    coordinates_data, filtered, rod_id, endpoint_xyz
+):
+    """按投影主杆两端的真实 XYZ，为杆上二维交点插值真实 X。"""
+    point1, point2 = coordinates_data[rod_id]
+    vx = point2[0] - point1[0]
+    vy = point2[1] - point1[1]
+    length_squared = vx * vx + vy * vy
+    if math.isclose(length_squared, 0.0, abs_tol=1e-9):
+        raise ValueError(f"投影主杆 {rod_id} 是零长度杆件")
+
+    start_x = float(endpoint_xyz[0][0])
+    end_x = float(endpoint_xyz[1][0])
+    real = []
+    for point in filtered:
+        ratio = (
+            (point[0] - point1[0]) * vx
+            + (point[1] - point1[1]) * vy
+        ) / length_squared
+        ratio = max(0.0, min(1.0, ratio))
+        real.append({
+            "point_2d": point,
+            "x_3d": start_x + ratio * (end_x - start_x),
+        })
+    return real
+
 def get_real_x_of_missing_nodes(
     coordinates_data,
     drawing_id,
@@ -613,6 +647,9 @@ def generate_third_class_nodes_and_members(
     node_id_groups,
     symmetry_type,
     yuzhi,
+    extra_main_rod_ids=None,
+    seed_nodes_2d=None,
+    real_x_endpoint_xyz=None,
 ):
     """为单个视图生成尚未覆盖的三类节点和三类杆件。
 
@@ -631,7 +668,9 @@ def generate_third_class_nodes_and_members(
         if len(node_list) == 2
     ]
     missing_members, existing_member_ids = find_missing_members(
-        view_members, coordinates_data, [rod_a_id, rod_b_id]
+        view_members,
+        coordinates_data,
+        [rod_a_id, rod_b_id, *(extra_main_rod_ids or [])],
     )
 
     node_existing = get_jiaodian_on_ganjian_by_missing_members(
@@ -645,16 +684,24 @@ def generate_third_class_nodes_and_members(
         yuzhi,
     )
 
-    real_node_existing = get_real_x_of_missing_nodes(
-        coordinates_data,
-        drawing_id,
-        node_existing,
-        newx,
-        pj,
-        rod_a_id,
-        judge_pj_index,
-        value_pj_index,
-    )
+    if real_x_endpoint_xyz is not None:
+        real_node_existing = {
+            member_id: get_real_x_between_xyz_endpoints(
+                coordinates_data, points, rod_a_id, real_x_endpoint_xyz
+            )
+            for member_id, points in node_existing.items()
+        }
+    else:
+        real_node_existing = get_real_x_of_missing_nodes(
+            coordinates_data,
+            drawing_id,
+            node_existing,
+            newx,
+            pj,
+            rod_a_id,
+            judge_pj_index,
+            value_pj_index,
+        )
 
     member_endpoints = {}
     for member in view_members:
@@ -697,8 +744,13 @@ def generate_third_class_nodes_and_members(
                 "point_2d": item.get("point_2d"),
             })
 
+    # 04/06 底视图的末端斜杆会同时连接“本轮新生成的三类节点”和
+    # “前面已经生成的二类节点”。可选种子让两类节点共同参与杆件组装；
+    # 旧图纸不传该参数，行为保持不变。
+    nodes_for_member_matching = list(real_node_existing_2d_nodes)
+    nodes_for_member_matching.extend(seed_nodes_2d or [])
     node_to_members = find_ganjian_by_nodes(
-        real_node_existing_2d_nodes, coordinates_data, yuzhi
+        nodes_for_member_matching, coordinates_data, yuzhi
     )
     member_to_nodes = defaultdict(list)
     for node_id, member_list in node_to_members.items():
@@ -852,6 +904,7 @@ def trans(
     drawing_type,
     id_offset=False,
     connection_index=None,
+    zhiliu_pj_overrides=None,
 ):
     """
     参数:
@@ -859,6 +912,8 @@ def trans(
         drawing_id: 从文件名取得的实际图纸编号，用于生成节点/杆件编号
         connection_index: 当前图纸在排序后文件列表中的位置（从 0 开始），
             用于读取按处理顺序排列的塔身拼接点；省略时保持旧的连续编号行为
+        zhiliu_pj_overrides: 直流塔复合担架生成的原始 pj 槽位覆盖值；
+            04 写入槽位 3 供 03 使用，06 写入槽位 2 供 05 使用
     """
     # 记录本次担架处理前全局列表的长度，用于只对本担架新增的节点/杆件做后处理
     jiedian_start = len(jiedian)
@@ -888,6 +943,16 @@ def trans(
         pj.append(positive_group)
         pj.append(negative_group)
 
+
+    if drawing_type == "ZhiLiu" and zhiliu_pj_overrides:
+        pj = list(pj)
+        for pj_index, connection_group in zhiliu_pj_overrides.items():
+            if pj_index < 0 or pj_index >= len(pj):
+                raise IndexError(
+                    f"直流塔复合担架连接点槽位不存在: pj[{pj_index}]"
+                )
+            pj[pj_index] = connection_group
+
     # ===== 担架索引修正 =====
     if drawing_type == "ShangZi":
         pj = [pj[i] for i in (0, 2)]
@@ -906,6 +971,10 @@ def trans(
         # 04 使用第二组，06 使用第三组。四张图的连接端都位于左侧，
         # 而每个物理组在 pj 中按右侧、左侧依次存放。
         pj = [pj[i] for i in (0, 0, 2, 4)]
+    elif drawing_type == "ZhiLiu":
+        # 直流塔按 01、02、04、03、06、05 执行。
+        # 03/05 不直接连接塔身，分别复用 04/06 所在侧的连接点组。
+        pj = [pj[i] for i in (1, 0, 3, 3, 2, 2)]
 
     pj = align_connection_groups(pj, drawing_id, connection_index)
 
@@ -958,6 +1027,8 @@ def trans(
         rod_front_a,
         rod_front_b,
     )
+    zhiliu_front_class1 = None
+    zhiliu_projected_frames = None
 
     # 正视图斜杆在水平杆上方时走 if 分支，在水平杆下方时走 else 分支。
     if diagonal_rod_is_above:
@@ -987,20 +1058,97 @@ def trans(
             "Z": round(newz,3),
         }
         jiedian.append(new_node)
+        if drawing_type == "ZhiLiu" and drawing_id in (4, 6):
+            upper_remote_plan_xyz = calc_jiandian_xyz(
+                coordinatesOverhead_data,
+                drawing_id,
+                pj,
+                0,
+                rod_103_id,
+                rod_104_id,
+            )
+            zhiliu_front_class1 = build_zhiliu_near_front_class1(
+                coordinatesFront_data,
+                pj[drawing_id - 1],
+                jiandian_id,
+                (newx, newy, newz),
+                upper_remote_plan_xyz,
+                yuzhi,
+            )
+            zhiliu_projected_frames = (
+                build_zhiliu_near_projected_class1_frames(
+                    zhiliu_front_class1
+                )
+            )
+            jiedian.extend(zhiliu_front_class1["new_nodes"])
+            main_rod_ids.append(
+                zhiliu_front_class1["roles"]["secondary_rod"]
+            )
+        elif drawing_type == "ZhiLiu" and drawing_id in (3, 5):
+            upper_remote_xyz = calc_jiandian_xyz(
+                coordinatesOverhead_data,
+                drawing_id,
+                pj,
+                0,
+                rod_103_id,
+                rod_104_id,
+            )
+            zhiliu_front_class1 = build_zhiliu_outer_front_class1(
+                coordinatesFront_data,
+                pj[drawing_id - 1],
+                jiandian_id,
+                (newx, newy, newz),
+                upper_remote_xyz,
+                "right" if drawing_id == 3 else "left",
+            )
+            zhiliu_projected_frames = (
+                build_zhiliu_near_projected_class1_frames(
+                    zhiliu_front_class1
+                )
+            )
+            jiedian.extend(zhiliu_front_class1["new_nodes"])
 
 
         ############################################################################################################
         # 2. 正视图
         ############################################################################################################
 
-        # 得到两个一类杆件上的交点
-        jiaodian_101,jiaodian_103 = get_jiaodian_on_ganjian(coordinatesFront_data,drawing_id, pj, rod_front_a,rod_front_b, yuzhi)
+        zhiliu_front_second_class = None
+        if zhiliu_front_class1 is not None:
+            if drawing_id in (3, 5):
+                zhiliu_front_second_class = (
+                    build_zhiliu_outer_front_second_class(
+                        coordinatesFront_data,
+                        zhiliu_front_class1,
+                        id_prefix,
+                        yuzhi,
+                    )
+                )
+            else:
+                zhiliu_front_second_class = build_zhiliu_near_front_second_class(
+                    coordinatesFront_data,
+                    zhiliu_front_class1,
+                    id_prefix,
+                    yuzhi,
+                )
+            jiedian.extend(zhiliu_front_second_class["new_nodes"])
+            ganjian.extend(zhiliu_front_second_class["new_members"])
+            # 04/06 的正视图由三根一类杆形成两片框架，新模块统一处理
+            # 两片框架，并负责复用公共节点和去除公共杆件。
+            jiaodian_101, jiaodian_103 = [], []
+        else:
+            # 得到两个一类杆件上的交点
+            jiaodian_101,jiaodian_103 = get_jiaodian_on_ganjian(coordinatesFront_data,drawing_id, pj, rod_front_a,rod_front_b, yuzhi)
 
         # 得到这些交点的真实x的值
         real_101 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_101, newx, pj, rod_front_a, 1, 1)
         real_103 = get_real_x_of_jiaodian(coordinatesFront_data, drawing_id, jiaodian_103, newx, pj, rod_front_b, 0, 0)
 
-        if (pj[drawing_id - 1][1][1][0] > 0): # 第 drawing_id 号担架下连接点的 x 坐标
+        if zhiliu_front_class1 is not None:
+            left_3d_id, right_3d_id = zhiliu_front_class1["endpoint_ids"][
+                rod_front_a
+            ]
+        elif (pj[drawing_id - 1][1][1][0] > 0): # 第 drawing_id 号担架下连接点的 x 坐标
             left_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点的节点编号
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1010,7 +1158,11 @@ def trans(
         # 标记交点中的端点
         real_101 = mark_endpoint_for_real_points(real_101,coordinatesFront_data,rod_front_a,left_3d_id,right_3d_id,yuzhi)
 
-        if (pj[drawing_id - 1][1][1][0] > 0):
+        if zhiliu_front_class1 is not None:
+            left_3d_id, right_3d_id = zhiliu_front_class1["endpoint_ids"][
+                rod_front_b
+            ]
+        elif (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][0][0]  # 303 与塔身相交端点
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1080,25 +1232,56 @@ def trans(
 
         # # ---------------生成杆件-----------------------------------------------------------------------------------#
 
-        member_to_nodes = generate_ganjian(coordinatesFront_data, node_101_nodes, node_103_nodes,yuzhi)
+        if zhiliu_front_second_class is not None:
+            member_to_nodes = zhiliu_front_second_class["member_to_nodes"]
+        else:
+            member_to_nodes = generate_ganjian(coordinatesFront_data, node_101_nodes, node_103_nodes,yuzhi)
 
-        for member_id, node_list in member_to_nodes.items():
-            if len(node_list) == 2:  # 只有两个端点的杆件才是合法的
-                ganjian.append({
-                    "member_id": str(member_id),
-                    "node1_id": node_list[0],
-                    "node2_id": node_list[1],
-                    "symmetry_type": 2
-                })
+            for member_id, node_list in member_to_nodes.items():
+                if len(node_list) == 2:  # 只有两个端点的杆件才是合法的
+                    ganjian.append({
+                        "member_id": str(member_id),
+                        "node1_id": node_list[0],
+                        "node2_id": node_list[1],
+                        "symmetry_type": 2
+                    })
 
         generate_third_class_nodes_and_members(
             coordinatesFront_data, drawing_id, newx, pj, member_to_nodes,
             rod_front_a, rod_front_b, 1, 1,
-            {
-                rod_front_a: (pj[drawing_id - 1][1][0], f"{jiandian_id + 20}"),
-                rod_front_b: (pj[drawing_id - 1][0][0], f"{jiandian_id + 20}"),
-            },
+            (
+                zhiliu_front_class1["endpoint_ids"]
+                if zhiliu_front_class1 is not None
+                else {
+                    rod_front_a: (pj[drawing_id - 1][1][0], f"{jiandian_id + 20}"),
+                    rod_front_b: (pj[drawing_id - 1][0][0], f"{jiandian_id + 20}"),
+                }
+            ),
             id_prefix, ("691", "791"), 2, yuzhi,
+            extra_main_rod_ids=(
+                [zhiliu_front_class1["roles"]["secondary_rod"]]
+                if (
+                    zhiliu_front_class1 is not None
+                    and "secondary_rod" in zhiliu_front_class1["roles"]
+                )
+                else None
+            ),
+            seed_nodes_2d=(
+                zhiliu_front_second_class.get("nodes_2d")
+                if (
+                    zhiliu_front_second_class is not None
+                    and drawing_id in (3, 5)
+                )
+                else None
+            ),
+            real_x_endpoint_xyz=(
+                zhiliu_front_class1["endpoint_xyz"][rod_front_a]
+                if (
+                    zhiliu_front_class1 is not None
+                    and drawing_id in (3, 5)
+                )
+                else None
+            ),
         )
 
         ############################################################################################################
@@ -1107,12 +1290,26 @@ def trans(
 
         jiaodian_101,jiaodian_102 = get_jiaodian_on_ganjian(coordinatesBottom_data,drawing_id, pj, rod_101_id,rod_102_id, yuzhi)
 
+        if zhiliu_projected_frames is not None:
+            bottom_frame = zhiliu_projected_frames["bottom"]
+            real_101 = get_real_x_between_xyz_endpoints(
+                coordinatesBottom_data, jiaodian_101, rod_101_id,
+                bottom_frame["endpoint_xyz"],
+            )
+            real_102 = get_real_x_between_xyz_endpoints(
+                coordinatesBottom_data, jiaodian_102, rod_102_id,
+                bottom_frame["endpoint_xyz"],
+            )
+            left_3d_id, right_3d_id = bottom_frame[
+                "primary_endpoint_ids"
+            ]
+        else:
+            real_101 = get_real_x_of_jiaodian(coordinatesBottom_data, drawing_id, jiaodian_101, newx, pj, rod_101_id,1,1)
+            real_102 = get_real_x_of_jiaodian(coordinatesBottom_data, drawing_id, jiaodian_102, newx, pj, rod_102_id, 0,0)
 
-        real_101 = get_real_x_of_jiaodian(coordinatesBottom_data, drawing_id, jiaodian_101, newx, pj, rod_101_id,1,1)
-        real_102 = get_real_x_of_jiaodian(coordinatesBottom_data, drawing_id, jiaodian_102, newx, pj, rod_102_id, 0,0)
-
-
-        if (pj[drawing_id - 1][1][1][0] > 0):
+        if zhiliu_projected_frames is not None:
+            pass
+        elif (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][1][0]  # 301 与塔身相交端点
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1121,7 +1318,11 @@ def trans(
         real_101 = mark_endpoint_for_real_points(real_101,coordinatesBottom_data,rod_101_id,left_3d_id,right_3d_id,yuzhi)
 
 
-        if (pj[drawing_id - 1][1][1][0] > 0):
+        if zhiliu_projected_frames is not None:
+            left_3d_id, right_3d_id = bottom_frame[
+                "symmetric_endpoint_ids"
+            ]
+        elif (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = str(int(pj[drawing_id - 1][1][0]) + 2)
             right_3d_id = f"{jiandian_id + 22}"
         else:
@@ -1151,14 +1352,20 @@ def trans(
                 "point_2d": item["point_2d"]
             }
             node_101_ids.append(node_info)
-            duichenzuo = int(pj[drawing_id - 1][1][0]) + 2
+            if zhiliu_projected_frames is not None:
+                reference_start, reference_end = bottom_frame[
+                    "symmetric_endpoint_ids"
+                ]
+            else:
+                reference_start = str(int(pj[drawing_id - 1][1][0]) + 2)
+                reference_end = str(jiandian_id + 22)
             jiedian.append({
                 "node_id": node_id,
                 "node_type": 12,
                 "symmetry_type": 2,
                 "X": item["x_3d"],
-                "Y": f"1{duichenzuo}",
-                "Z": f"1{jiandian_id + 22}"
+                "Y": f"1{reference_start}",
+                "Z": f"1{reference_end}"
             })
 
         new_node_cnt = 0  # 只统计“真正新建的节点”
@@ -1195,23 +1402,55 @@ def trans(
         generate_third_class_nodes_and_members(
             coordinatesBottom_data, drawing_id, newx, pj, member_to_nodes,
             rod_101_id, rod_102_id, 1, 1,
-            {
-                rod_101_id: (pj[drawing_id - 1][1][0], f"{jiandian_id + 20}"),
-                rod_102_id: (str(int(pj[drawing_id - 1][1][0]) + 2), f"{jiandian_id + 22}"),
-            },
+            (
+                {
+                    rod_101_id: bottom_frame["primary_endpoint_ids"],
+                    rod_102_id: bottom_frame["symmetric_endpoint_ids"],
+                }
+                if zhiliu_projected_frames is not None
+                else {
+                    rod_101_id: (pj[drawing_id - 1][1][0], f"{jiandian_id + 20}"),
+                    rod_102_id: (str(int(pj[drawing_id - 1][1][0]) + 2), f"{jiandian_id + 22}"),
+                }
+            ),
             id_prefix, ("491", "591"), 0, yuzhi,
+            seed_nodes_2d=(
+                node_101_ids + node_102_ids
+                if zhiliu_projected_frames is not None
+                else None
+            ),
+            real_x_endpoint_xyz=(
+                bottom_frame["endpoint_xyz"]
+                if zhiliu_projected_frames is not None
+                else None
+            ),
         )
-
         ############################################################################################################
         # 4. 顶视图
         ############################################################################################################
 
         jiaodian_103,jiaodian_104 = get_jiaodian_on_ganjian(coordinatesOverhead_data,drawing_id, pj, rod_103_id,rod_104_id, yuzhi)
 
-        real_103 = get_real_x_of_jiaodian(coordinatesOverhead_data, drawing_id, jiaodian_103, newx, pj, rod_103_id,1,0)
-        real_104 = get_real_x_of_jiaodian(coordinatesOverhead_data, drawing_id, jiaodian_104, newx, pj, rod_104_id, 1,0)
+        if zhiliu_projected_frames is not None:
+            overhead_frame = zhiliu_projected_frames["overhead"]
+            real_103 = get_real_x_between_xyz_endpoints(
+                coordinatesOverhead_data, jiaodian_103, rod_103_id,
+                overhead_frame["endpoint_xyz"],
+            )
+            real_104 = get_real_x_between_xyz_endpoints(
+                coordinatesOverhead_data, jiaodian_104, rod_104_id,
+                overhead_frame["endpoint_xyz"],
+            )
+            left_3d_id, right_3d_id = overhead_frame[
+                "primary_endpoint_ids"
+            ]
+        else:
+            real_103 = get_real_x_of_jiaodian(coordinatesOverhead_data, drawing_id, jiaodian_103, newx, pj, rod_103_id,1,0)
+            real_104 = get_real_x_of_jiaodian(coordinatesOverhead_data, drawing_id, jiaodian_104, newx, pj, rod_104_id, 1,0)
 
-        if (pj[drawing_id - 1][1][1][0] > 0):
+        if zhiliu_projected_frames is not None:
+            pass
+        elif (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = pj[drawing_id - 1][0][0]  # 301 与塔身相交端点
             right_3d_id = f"{jiandian_id + 20}"  # 尖点
         else:
@@ -1220,7 +1459,11 @@ def trans(
 
         real_103 = mark_endpoint_for_real_points(real_103, coordinatesOverhead_data, rod_103_id, left_3d_id, right_3d_id,yuzhi)
 
-        if (pj[drawing_id - 1][1][1][0] > 0):
+        if zhiliu_projected_frames is not None:
+            left_3d_id, right_3d_id = overhead_frame[
+                "symmetric_endpoint_ids"
+            ]
+        elif (pj[drawing_id - 1][1][1][0] > 0):
             left_3d_id = str(int(pj[drawing_id - 1][0][0]) + 2)
             right_3d_id = f"{jiandian_id + 22}"  # 尖点
         else:
@@ -1250,13 +1493,20 @@ def trans(
                 "point_2d": item["point_2d"]
             }
             node_103_ids.append(node_info)
+            if zhiliu_projected_frames is not None:
+                reference_start, reference_end = overhead_frame[
+                    "primary_endpoint_ids"
+                ]
+            else:
+                reference_start = str(pj[drawing_id - 1][0][0])
+                reference_end = str(jiandian_id + 20)
             jiedian.append({
                 "node_id": node_id,
                 "node_type": 12,
                 "symmetry_type": 2,
                 "X": item["x_3d"],
-                "Y": f"1{pj[drawing_id - 1][0][0]}",
-                "Z": f"1{jiandian_id + 20}"
+                "Y": f"1{reference_start}",
+                "Z": f"1{reference_end}"
             })
 
         new_node_cnt = 0  # 只统计“真正新建的节点”
@@ -1292,13 +1542,29 @@ def trans(
         generate_third_class_nodes_and_members(
             coordinatesOverhead_data, drawing_id, newx, pj, member_to_nodes,
             rod_103_id, rod_104_id, 1, 0,
-            {
-                rod_103_id: (pj[drawing_id - 1][0][0], f"{jiandian_id + 20}"),
-                rod_104_id: (str(int(pj[drawing_id - 1][0][0]) + 2), f"{jiandian_id + 22}"),
-            },
+            (
+                {
+                    rod_103_id: overhead_frame["primary_endpoint_ids"],
+                    rod_104_id: overhead_frame["symmetric_endpoint_ids"],
+                }
+                if zhiliu_projected_frames is not None
+                else {
+                    rod_103_id: (pj[drawing_id - 1][0][0], f"{jiandian_id + 20}"),
+                    rod_104_id: (str(int(pj[drawing_id - 1][0][0]) + 2), f"{jiandian_id + 22}"),
+                }
+            ),
             id_prefix, ("891", "991"), 0, yuzhi,
+            seed_nodes_2d=(
+                node_103_ids + node_104_ids
+                if zhiliu_projected_frames is not None
+                else None
+            ),
+            real_x_endpoint_xyz=(
+                overhead_frame["endpoint_xyz"]
+                if zhiliu_projected_frames is not None
+                else None
+            ),
         )
-
         ############################################################################################################
         # 5. 添加一类杆件
         ############################################################################################################
@@ -1312,27 +1578,63 @@ def trans(
             str(rod_front_a),
             str(rod_front_b),
         }
+        if zhiliu_front_class1 is not None:
+            secondary_rod = zhiliu_front_class1["roles"].get(
+                "secondary_rod"
+            )
+            if secondary_rod is not None:
+                remove_ids.add(str(secondary_rod))
 
         ganjian[:] = [
             g for g in ganjian
             if g.get("member_id") not in remove_ids
         ]
 
-        new_ganjian = {
-            "member_id": f"{rod_front_a}",
-            "node1_id": pj[drawing_id - 1][1][0],
-            "node2_id": f"{jiandian_id + 20}",
-            "symmetry_type": 2
-        }
-        ganjian.append(new_ganjian)
+        if zhiliu_front_class1 is not None:
+            for rod_id in zhiliu_front_class1["roles"]["all_rods"]:
+                node1_id, node2_id = zhiliu_front_class1["endpoint_ids"][
+                    rod_id
+                ]
+                ganjian.append({
+                    "member_id": str(rod_id),
+                    "node1_id": node1_id,
+                    "node2_id": node2_id,
+                    "symmetry_type": 2,
+                })
 
-        new_ganjian = {
-            "member_id": f"{rod_front_b}",
-            "node1_id": pj[drawing_id - 1][0][0],
-            "node2_id": f"{jiandian_id + 20}",
-            "symmetry_type": 2
-        }
-        ganjian.append(new_ganjian)
+            # 底视图投影水平主杆，顶视图投影倾斜主杆。两组中的
+            # 第二根杆连接对应的 +2 对称节点。
+            for rod_id, endpoint_key, frame_name in (
+                (rod_101_id, "primary_endpoint_ids", "bottom"),
+                (rod_102_id, "symmetric_endpoint_ids", "bottom"),
+                (rod_103_id, "primary_endpoint_ids", "overhead"),
+                (rod_104_id, "symmetric_endpoint_ids", "overhead"),
+            ):
+                node1_id, node2_id = zhiliu_projected_frames[frame_name][
+                    endpoint_key
+                ]
+                ganjian.append({
+                    "member_id": str(rod_id),
+                    "node1_id": node1_id,
+                    "node2_id": node2_id,
+                    "symmetry_type": 0,
+                })
+        else:
+            new_ganjian = {
+                "member_id": f"{rod_front_a}",
+                "node1_id": pj[drawing_id - 1][1][0],
+                "node2_id": f"{jiandian_id + 20}",
+                "symmetry_type": 2
+            }
+            ganjian.append(new_ganjian)
+
+            new_ganjian = {
+                "member_id": f"{rod_front_b}",
+                "node1_id": pj[drawing_id - 1][0][0],
+                "node2_id": f"{jiandian_id + 20}",
+                "symmetry_type": 2
+            }
+            ganjian.append(new_ganjian)
 
 
     else:
@@ -1768,22 +2070,47 @@ def trans(
             if j.get("symmetry_type") == 2:
                 j["symmetry_type"] = 4
 
+    if zhiliu_front_class1 is not None:
+        return zhiliu_front_class1.get("outer_connection_group")
+    return None
+
 def work(file_path, data, drawing_type, tashen_dir=None):
     # 担架和塔身合并的图纸（塔身目录下存在 01.txt，如 T7833/7837）担架编号需偏移 +2，
     # 避免担架与塔身的节点编号生成重复。
     id_offset = bool(tashen_dir) and os.path.exists(os.path.join(tashen_dir, "01.txt"))
 
-    for connection_index, (drawing_id, drawing_path) in enumerate(
-        list_stretcher_drawings(file_path)
-    ):
-        trans(
+    drawings = list_stretcher_drawings(file_path)
+    if drawing_type == "ZhiLiu":
+        execution_order = {
+            drawing_id: order
+            for order, drawing_id in enumerate((1, 2, 4, 3, 6, 5))
+        }
+        drawings.sort(
+            key=lambda item: execution_order.get(
+                item[0], len(execution_order) + item[0]
+            )
+        )
+
+    zhiliu_pj_overrides = {}
+    for connection_index, (drawing_id, drawing_path) in enumerate(drawings):
+        if drawing_type == "ZhiLiu":
+            # 直流塔在 trans() 中已经按实际图号建立 01..06 的 pj 映射；
+            # 执行顺序只负责让内段先于外段，不能再用执行序号改写图号索引。
+            connection_index = drawing_id - 1
+        outer_connection_group = trans(
             drawing_path,
             drawing_id,
             data,
             drawing_type,
             id_offset,
             connection_index,
+            zhiliu_pj_overrides,
         )
+        if drawing_type == "ZhiLiu" and outer_connection_group is not None:
+            if drawing_id == 4:
+                zhiliu_pj_overrides[3] = outer_connection_group
+            elif drawing_id == 6:
+                zhiliu_pj_overrides[2] = outer_connection_group
 
 
     return jiedian, ganjian
