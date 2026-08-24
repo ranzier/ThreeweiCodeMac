@@ -50,7 +50,7 @@ savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
 
 
 # todo: 通用性问题
-
+# 111
 
 """
 drawing_type：图纸类型 
