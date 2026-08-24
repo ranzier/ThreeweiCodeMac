@@ -49,13 +49,7 @@ project_path = "/Users/bilibili/Desktop/threewei/Sanwei/output_path"
 savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
 
 
-# todo: 1. 完成04，06正视图一类杆件和一类节点      ✅
-# todo: 2. 完成04，06正视图二类杆件和二类节点     ✅
-# todo: 3. 完成04，06俯视图和仰视图             ✅
-# todo: 4. 完成03，05正视图
-# todo: 5. 完成03，05俯视图和仰视图
-
-# todo: 测试原来的图纸有没有影响
+# todo: 通用性适配
 
 
 """
