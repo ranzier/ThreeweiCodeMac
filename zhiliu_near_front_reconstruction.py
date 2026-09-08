@@ -1,4 +1,4 @@
-"""直流塔 04/06 靠塔担架正视图重建。
+"""直流塔三杆靠塔担架正视图重建。
 
 本模块处理正视图中的一类骨架，以及骨架两片区域内的二类节点和
 二类杆件。底视图、顶视图以及普通担架仍由 ``xintrans.py`` 的原有
@@ -27,12 +27,6 @@ def _dist_point_to_line(point, line_point1, line_point2):
 
 def detect_zhiliu_near_front_class1_rods(coordinates_data, threshold=150):
     """识别靠塔担架正视图的两根一类主杆和一根一类副杆。"""
-    # 04/06 的正视图比旧图纸多一根参与骨架定位的一类副杆。先沿用原算法
-    # 找出两根最长主杆，再单独从其余杆件中识别副杆，避免改变旧识别函数。
-    primary_ids = detect_main_rods_enhanced(coordinates_data)
-    if len(primary_ids) != 2:
-        raise ValueError("直流塔靠塔担架正视图未识别到两根一类主杆")
-
     def vertical_ratio(rod_id):
         point1, point2 = coordinates_data[rod_id]
         length = _dist_points(point1, point2)
@@ -40,19 +34,45 @@ def detect_zhiliu_near_front_class1_rods(coordinates_data, threshold=150):
             raise ValueError(f"正视图杆件 {rod_id} 是零长度杆件")
         return abs(point2[1] - point1[1]) / length
 
-    # 竖向变化比例较小的是水平主杆，较大的是斜主杆。
-    lower_rod, diagonal_rod = sorted(primary_ids, key=vertical_ratio)
+    def rod_length(rod_id):
+        point1, point2 = coordinates_data[rod_id]
+        return _dist_points(point1, point2)
+
+    # 三杆担架中，下水平主杆和水平副杆都可能比斜主杆长，不能继续用
+    # “长度前两名”区分主杆。先取最长的近水平杆作为下主杆，再取一端
+    # 落在下主杆上的最长斜杆，最后识别一端落在斜杆上的水平副杆。
+    horizontal_ids = [
+        rod_id for rod_id in coordinates_data
+        if vertical_ratio(rod_id) <= 0.1
+    ]
+    if not horizontal_ids:
+        raise ValueError("直流塔靠塔担架正视图未识别到水平主杆")
+    lower_rod = max(horizontal_ids, key=rod_length)
+    lower_points = coordinates_data[lower_rod]
+
+    diagonal_candidates = []
+    for rod_id, points in coordinates_data.items():
+        if rod_id == lower_rod or vertical_ratio(rod_id) <= 0.1:
+            continue
+        if any(
+            _is_point_near_segment(point, lower_points, threshold)
+            for point in points
+        ):
+            diagonal_candidates.append((rod_length(rod_id), rod_id))
+    if not diagonal_candidates:
+        raise ValueError("直流塔靠塔担架正视图未识别到斜主杆")
+    _, diagonal_rod = max(diagonal_candidates, key=lambda item: item[0])
+
     diagonal_points = coordinates_data[diagonal_rod]
     candidates = []
     for rod_id, points in coordinates_data.items():
-        if rod_id in primary_ids or vertical_ratio(rod_id) > 0.1:
+        if rod_id in (lower_rod, diagonal_rod) or vertical_ratio(rod_id) > 0.1:
             continue
         if any(
-            _dist_point_to_line(point, diagonal_points[0], diagonal_points[1])
-            < threshold
+            _is_point_near_segment(point, diagonal_points, threshold)
             for point in points
         ):
-            candidates.append((_dist_points(points[0], points[1]), rod_id))
+            candidates.append((rod_length(rod_id), rod_id))
 
     if not candidates:
         raise ValueError("直流塔靠塔担架正视图未识别到一类副杆")
@@ -128,16 +148,20 @@ def build_zhiliu_near_front_class1(
     jiandian_id,
     lower_remote_xyz,
     threshold=150,
+    connection_side=None,
 ):
-    """生成直流塔 04/06 靠塔担架正视图的一类骨架信息。"""
+    """生成直流塔三杆靠塔担架正视图的一类骨架信息。"""
     roles = detect_zhiliu_near_front_class1_rods(
         coordinates_front_data, threshold
     )
     lower_rod, diagonal_rod = roles["main_rods"]
     secondary_rod = roles["secondary_rod"]
-    connection_side, _, _ = get_main_rod_connection_geometry(
-        coordinates_front_data, lower_rod, diagonal_rod
-    )
+    if connection_side is None:
+        connection_side, _, _ = get_main_rod_connection_geometry(
+            coordinates_front_data, lower_rod, diagonal_rod
+        )
+    elif connection_side not in ("left", "right"):
+        raise ValueError(f"未知直流塔担架连接端方向: {connection_side}")
 
     if not connection_group or len(connection_group) < 2:
         raise ValueError("直流塔靠塔担架缺少塔身连接点")

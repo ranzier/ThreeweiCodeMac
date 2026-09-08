@@ -42,8 +42,10 @@ import tran2dto3d
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/Y7850"
 
 # 直流
-danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/JC27302"
-tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/JC27302"
+# danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/JC27302"
+# tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/JC27302"
+danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/jg301"
+tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/jg301"
 
 project_path = "/Users/bilibili/Desktop/threewei/Sanwei/output_path"
 savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
@@ -58,8 +60,9 @@ drawing_type：图纸类型
 1. GuLou(鼓楼型)：1E2-SDJ、J1、J3、J4、Z1
 2. ShangZi(上字型)：T7833、781
 3. GanZi(干字型)：7837
-4. ZhiLiu(直流塔)：JC27302
-5. YangJiao(羊角型): Y7850
+4. YangJiao(羊角型): Y7850
+5. ZhiLiu(直流塔)：JC27302、jg301
+
 """
 
 
