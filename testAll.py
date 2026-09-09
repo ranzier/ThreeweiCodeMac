@@ -66,13 +66,15 @@ drawing_type：图纸类型
 """
 
 
-
-
-
 # 手动配置 PJ 索引顺序
 pj_index_config = None
 # pj_index_config = (1, 0, 3, 2, 5, 4, 7, 6)
 
+# 对称性配置：
+# None  = 不启用手动配置，执行原来的 drawing_type 对称逻辑
+# True  = 强制生成对称性: 对所有担架节点和坐标
+# False = 强制不生成对称性
+symmetry_config = None
 
 tran2dto3d.tran2dto3d( danjia_dir=danjia_dir,
         tashen_dir=tashen_dir,
@@ -83,7 +85,8 @@ tran2dto3d.tran2dto3d( danjia_dir=danjia_dir,
         # drawing_type = "GanZi")
         # drawing_type = "YangJiao")
         drawing_type = "ZhiLiu",
-        pj_index_config=pj_index_config)
+        pj_index_config=pj_index_config,
+        symmetry_config=symmetry_config )
 
 
 # 1E2-SDJ依次输入：0  911  0.9

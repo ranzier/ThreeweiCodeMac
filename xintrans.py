@@ -908,6 +908,7 @@ def trans(
     zhiliu_pj_overrides=None,
     zhiliu_four_layout=False,
     pj_index_config=None,
+    symmetry_config=None,
 ):
     """
     参数:
@@ -2081,8 +2082,19 @@ def trans(
 
 
 
+    # 手动开启时，对当前所有担架新增的数据生成对称性。
+    if symmetry_config is True:
+        for g in ganjian[ganjian_start:]:
+            if g.get("symmetry_type") == 2:
+                g["symmetry_type"] = 4
+            elif g.get("symmetry_type") == 0:
+                g["symmetry_type"] = 1
+        for j in jiedian[jiedian_start:]:
+            if j.get("symmetry_type") == 2:
+                j["symmetry_type"] = 4
+
    #===== GuLou 型 4 个担架对称性生成 =====
-    if drawing_type == "GuLou" and count_txt_files(os.path.dirname(file_path)) == 4:
+    if symmetry_config is None and drawing_type == "GuLou" and count_txt_files(os.path.dirname(file_path)) == 4:
         for g in ganjian:
             if g.get("symmetry_type") == 2:
                 g["symmetry_type"] = 4
@@ -2093,7 +2105,7 @@ def trans(
                 j["symmetry_type"] = 4
 
  #===== ShangZi 型担架对称性生成 =====
-    if drawing_type == "ShangZi" and drawing_id == 2:
+    if symmetry_config is None and drawing_type == "ShangZi" and drawing_id == 2:
         for g in ganjian[ganjian_start:]:
             if g.get("symmetry_type") == 2:
                 g["symmetry_type"] = 4
@@ -2106,7 +2118,7 @@ def trans(
 
 
 #===== GanZi ，羊角形型担架对称性生成 =====
-    if drawing_type == "GanZi" or drawing_type == "YangJiao":
+    if symmetry_config is None and (drawing_type == "GanZi" or drawing_type == "YangJiao"):
         for g in ganjian:
             if g.get("symmetry_type") == 2:
                 g["symmetry_type"] = 4
@@ -2122,7 +2134,7 @@ def trans(
         return zhiliu_front_class1.get("outer_connection_group")
     return None
 
-def work(file_path, data, drawing_type, tashen_dir=None, pj_index_config=None):
+def work(file_path, data, drawing_type, tashen_dir=None, pj_index_config=None, symmetry_config=None):
     # 担架和塔身合并的图纸（塔身目录下存在 01.txt，如 T7833/7837）担架编号需偏移 +2，
     # 避免担架与塔身的节点编号生成重复。
     id_offset = bool(tashen_dir) and os.path.exists(os.path.join(tashen_dir, "01.txt"))
@@ -2160,6 +2172,7 @@ def work(file_path, data, drawing_type, tashen_dir=None, pj_index_config=None):
             zhiliu_pj_overrides,
             zhiliu_four_layout,
             pj_index_config,
+            symmetry_config,
         )
         if (
             drawing_type == "ZhiLiu"
