@@ -42,10 +42,10 @@ import tran2dto3d
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/Y7850"
 
 # 直流
-# danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/JC27302"
-# tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/JC27302"
-danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/jg301"
-tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/jg301"
+danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/JC27302"
+tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/JC27302"
+# danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/jg301"
+# tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/jg301"
 
 project_path = "/Users/bilibili/Desktop/threewei/Sanwei/output_path"
 savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
@@ -66,6 +66,14 @@ drawing_type：图纸类型
 """
 
 
+
+
+
+# 手动配置 PJ 索引顺序
+pj_index_config = None
+# pj_index_config = (1, 0, 3, 2, 5, 4, 7, 6)
+
+
 tran2dto3d.tran2dto3d( danjia_dir=danjia_dir,
         tashen_dir=tashen_dir,
         project_path=project_path,
@@ -74,7 +82,8 @@ tran2dto3d.tran2dto3d( danjia_dir=danjia_dir,
         # drawing_type = "ShangZi")
         # drawing_type = "GanZi")
         # drawing_type = "YangJiao")
-        drawing_type = "ZhiLiu")
+        drawing_type = "ZhiLiu",
+        pj_index_config=pj_index_config)
 
 
 # 1E2-SDJ依次输入：0  911  0.9

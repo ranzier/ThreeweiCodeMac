@@ -907,6 +907,7 @@ def trans(
     connection_index=None,
     zhiliu_pj_overrides=None,
     zhiliu_four_layout=False,
+    pj_index_config=None,
 ):
     """
     参数:
@@ -960,7 +961,9 @@ def trans(
             pj[pj_index] = connection_group
 
     # ===== 担架索引修正 =====
-    if drawing_type == "ShangZi":
+    if pj_index_config is not None:
+        pj = [pj[i] for i in pj_index_config]
+    elif drawing_type == "ShangZi":
         pj = [pj[i] for i in (0, 2)]
     elif drawing_type == "GanZi":
         # 7837/01 位于塔身左侧，7837/02 位于塔身右侧。
@@ -2119,7 +2122,7 @@ def trans(
         return zhiliu_front_class1.get("outer_connection_group")
     return None
 
-def work(file_path, data, drawing_type, tashen_dir=None):
+def work(file_path, data, drawing_type, tashen_dir=None, pj_index_config=None):
     # 担架和塔身合并的图纸（塔身目录下存在 01.txt，如 T7833/7837）担架编号需偏移 +2，
     # 避免担架与塔身的节点编号生成重复。
     id_offset = bool(tashen_dir) and os.path.exists(os.path.join(tashen_dir, "01.txt"))
@@ -2156,6 +2159,7 @@ def work(file_path, data, drawing_type, tashen_dir=None):
             connection_index,
             zhiliu_pj_overrides,
             zhiliu_four_layout,
+            pj_index_config,
         )
         if (
             drawing_type == "ZhiLiu"
