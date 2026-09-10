@@ -909,6 +909,8 @@ def trans(
     zhiliu_four_layout=False,
     pj_index_config=None,
     symmetry_config=None,
+    three_main_drawings=None,
+    compound_pairs=None,
 ):
     """
     参数:
@@ -921,6 +923,11 @@ def trans(
         zhiliu_four_layout: 是否使用 01/02 双主杆、03/04 三杆且四幅均
             直接连接塔身的四担架直流塔布局
     """
+    if three_main_drawings is None:
+        three_main_drawings = (3, 4) if zhiliu_four_layout else (4, 6)
+    if compound_pairs is None:
+        compound_pairs = {} if zhiliu_four_layout else {3: 4, 5: 6}
+
     # 记录本次担架处理前全局列表的长度，用于只对本担架新增的节点/杆件做后处理
     jiedian_start = len(jiedian)
     ganjian_start = len(ganjian)
@@ -949,17 +956,6 @@ def trans(
         pj.append(positive_group)
         pj.append(negative_group)
 
-
-    # 04/06 完成后会把各自外端连接点写回原始 pj 槽位，使随后执行的
-    # 03/05 把这些点当作内端连接点；其他图纸类型不进入此分支。
-    if drawing_type == "ZhiLiu" and zhiliu_pj_overrides:
-        pj = list(pj)
-        for pj_index, connection_group in zhiliu_pj_overrides.items():
-            if pj_index < 0 or pj_index >= len(pj):
-                raise IndexError(
-                    f"直流塔复合担架连接点槽位不存在: pj[{pj_index}]"
-                )
-            pj[pj_index] = connection_group
 
     # ===== 担架索引修正 =====
     if pj_index_config is not None:
@@ -993,6 +989,8 @@ def trans(
         pj = [pj[i] for i in (1, 0, 3, 3, 2, 2)]
 
     pj = align_connection_groups(pj, drawing_id, connection_index)
+    if drawing_id in zhiliu_pj_overrides:
+        pj[drawing_id - 1] = zhiliu_pj_overrides[drawing_id]
 
 
     # 担架编号偏移：担架和塔身合并的图纸（如 T7833/7837，塔身目录下存在 01.txt）担架从 3 号起，
@@ -1032,24 +1030,33 @@ def trans(
     if drawing_type == "GanZi":
         jiandian_id = (id_prefix * 100 + 1) * 100 + 70
 
-    is_four_rod_stretcher = (
-        drawing_type == "ZhiLiu"
-        and zhiliu_four_layout
-        and drawing_id in (3, 4)
+    is_three_main_stretcher = (
+        drawing_type == "ZhiLiu" and drawing_id in three_main_drawings
     )
-    if is_four_rod_stretcher:
+    is_compound_outer_stretcher = (
+        drawing_type == "ZhiLiu" and drawing_id in compound_pairs
+    )
+    is_direct_three_main_stretcher = (
+        is_three_main_stretcher and drawing_id not in compound_pairs.values()
+    )
+    if is_three_main_stretcher:
         four_class1_roles = detect_zhiliu_near_front_class1_rods(
             coordinatesFront_data, yuzhi
         )
         rod_front_a, rod_front_b = four_class1_roles["main_rods"]
-        connection_side = "right" if drawing_id == 3 else "left"
-        endpoint_selector = min if connection_side == "left" else max
-        upper_front_rod, lower_front_rod = sorted(
-            (rod_front_a, rod_front_b),
-            key=lambda rod_id: endpoint_selector(
-                coordinatesFront_data[rod_id], key=lambda point: point[0]
-            )[1],
-        )
+        if is_direct_three_main_stretcher:
+            connection_side = "right" if drawing_id == 3 else "left"
+            endpoint_selector = min if connection_side == "left" else max
+            upper_front_rod, lower_front_rod = sorted(
+                (rod_front_a, rod_front_b),
+                key=lambda rod_id: endpoint_selector(
+                    coordinatesFront_data[rod_id], key=lambda point: point[0]
+                )[1],
+            )
+        else:
+            _, upper_front_rod, lower_front_rod = get_main_rod_connection_geometry(
+                coordinatesFront_data, rod_front_a, rod_front_b
+            )
     else:
         rod_front_a, rod_front_b = detect_main_rods_by_type(
             coordinatesFront_data, drawing_type
@@ -1097,9 +1104,7 @@ def trans(
         jiedian.append(new_node)
         # 04/06 是直接靠塔的内层担架：保留底视图算出的水平主杆外端，
         # 再由专用模块根据正视图建立两根主杆、一根副杆及其真实端点。
-        if drawing_type == "ZhiLiu" and (
-            drawing_id in (4, 6) or is_four_rod_stretcher
-        ):
+        if is_three_main_stretcher:
             zhiliu_front_class1 = build_zhiliu_near_front_class1(
                 coordinatesFront_data,
                 pj[drawing_id - 1],
@@ -1108,7 +1113,7 @@ def trans(
                 yuzhi,
                 (
                     "right" if drawing_id == 3 else "left"
-                    if is_four_rod_stretcher else None
+                    if is_direct_three_main_stretcher else None
                 ),
             )
             zhiliu_projected_frames = (
@@ -1122,7 +1127,7 @@ def trans(
             )
         # 03/05 是复合担架的外层：内端使用 04/06 回传的连接点，
         # 上、下外端仍分别由顶视图、底视图的原有尖点算法提供。
-        elif drawing_type == "ZhiLiu" and drawing_id in (3, 5):
+        elif is_compound_outer_stretcher:
             upper_remote_xyz = calc_jiandian_xyz(
                 coordinatesOverhead_data,
                 drawing_id,
@@ -1155,7 +1160,7 @@ def trans(
         # 只要专用一类骨架存在，正视图的二类结构也交给直流塔模块；
         # 普通图纸继续进入下面完全不变的双主杆通用流程。
         if zhiliu_front_class1 is not None:
-            if drawing_id in (3, 5) and not is_four_rod_stretcher:
+            if is_compound_outer_stretcher:
                 zhiliu_front_second_class = (
                     build_zhiliu_outer_front_second_class(
                         coordinatesFront_data,
@@ -1310,8 +1315,7 @@ def trans(
                 zhiliu_front_second_class.get("nodes_2d")
                 if (
                     zhiliu_front_second_class is not None
-                    and drawing_id in (3, 5)
-                    and not is_four_rod_stretcher
+                    and is_compound_outer_stretcher
                 )
                 else None
             ),
@@ -1319,8 +1323,7 @@ def trans(
                 zhiliu_front_class1["endpoint_xyz"][rod_front_a]
                 if (
                     zhiliu_front_class1 is not None
-                    and drawing_id in (3, 5)
-                    and not is_four_rod_stretcher
+                    and is_compound_outer_stretcher
                 )
                 else None
             ),
@@ -2134,27 +2137,48 @@ def trans(
         return zhiliu_front_class1.get("outer_connection_group")
     return None
 
-def work(file_path, data, drawing_type, tashen_dir=None, pj_index_config=None, symmetry_config=None):
+def work(
+    file_path, data, drawing_type, tashen_dir=None, pj_index_config=None,
+    symmetry_config=None, three_main_drawings=None, compound_pairs=None,
+):
     # 担架和塔身合并的图纸（塔身目录下存在 01.txt，如 T7833/7837）担架编号需偏移 +2，
     # 避免担架与塔身的节点编号生成重复。
     id_offset = bool(tashen_dir) and os.path.exists(os.path.join(tashen_dir, "01.txt"))
 
     drawings = list_stretcher_drawings(file_path)
+    drawing_ids = {drawing_id for drawing_id, _ in drawings}
     zhiliu_four_layout = (
-        drawing_type == "ZhiLiu"
-        and {drawing_id for drawing_id, _ in drawings} == {1, 2, 3, 4}
+        drawing_type == "ZhiLiu" and drawing_ids == {1, 2, 3, 4}
     )
-    if drawing_type == "ZhiLiu" and not zhiliu_four_layout:
-        # 复合担架必须先重建靠塔部分再重建外层部分，才能传递真实连接点。
-        execution_order = {
-            drawing_id: order
-            for order, drawing_id in enumerate((1, 2, 4, 3, 6, 5))
-        }
-        drawings.sort(
-            key=lambda item: execution_order.get(
-                item[0], len(execution_order) + item[0]
-            )
+    if compound_pairs is None:
+        compound_pairs = {} if zhiliu_four_layout else {3: 4, 5: 6}
+    else:
+        compound_pairs = dict(compound_pairs)
+
+    if three_main_drawings is None:
+        three_main_drawings = (3, 4) if zhiliu_four_layout else (4, 6)
+    three_main_drawings = set(three_main_drawings)
+
+    configured_ids = three_main_drawings | set(compound_pairs) | set(compound_pairs.values())
+    missing_ids = configured_ids - drawing_ids
+    if drawing_type == "ZhiLiu" and missing_ids:
+        raise ValueError(f"直流塔手动配置包含不存在的图纸: {sorted(missing_ids)}")
+    missing_inner_ids = set(compound_pairs.values()) - three_main_drawings
+    if drawing_type == "ZhiLiu" and missing_inner_ids:
+        raise ValueError(
+            f"复合担架的靠塔内层图纸必须配置为三主杆: {sorted(missing_inner_ids)}"
         )
+
+    if drawing_type == "ZhiLiu" and compound_pairs:
+        # 复合担架必须先重建靠塔部分再重建外层部分，才能传递真实连接点。
+        execution_ids = []
+        for drawing_id, _ in drawings:
+            inner_id = compound_pairs.get(drawing_id)
+            if inner_id is not None and inner_id not in execution_ids:
+                execution_ids.append(inner_id)
+            if drawing_id not in execution_ids:
+                execution_ids.append(drawing_id)
+        drawings.sort(key=lambda item: execution_ids.index(item[0]))
 
     zhiliu_pj_overrides = {}
     for connection_index, (drawing_id, drawing_path) in enumerate(drawings):
@@ -2173,18 +2197,16 @@ def work(file_path, data, drawing_type, tashen_dir=None, pj_index_config=None, s
             zhiliu_four_layout,
             pj_index_config,
             symmetry_config,
+            three_main_drawings,
+            compound_pairs,
         )
         if (
             drawing_type == "ZhiLiu"
-            and not zhiliu_four_layout
             and outer_connection_group is not None
         ):
-            # 04 的外端覆盖 03 使用的原始 pj[3]，06 的外端覆盖 05 使用
-            # 的原始 pj[2]；下一次 trans() 会在 pj 重排前应用该覆盖。
-            if drawing_id == 4:
-                zhiliu_pj_overrides[3] = outer_connection_group
-            elif drawing_id == 6:
-                zhiliu_pj_overrides[2] = outer_connection_group
+            for outer_id, inner_id in compound_pairs.items():
+                if drawing_id == inner_id:
+                    zhiliu_pj_overrides[outer_id] = outer_connection_group
 
 
     return jiedian, ganjian

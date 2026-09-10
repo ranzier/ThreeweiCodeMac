@@ -42,10 +42,10 @@ import tran2dto3d
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/Y7850"
 
 # 直流
-danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/JC27302"
-tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/JC27302"
-# danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/jg301"
-# tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/jg301"
+# danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/JC27302"
+# tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/JC27302"
+danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/jg301"
+tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/jg301"
 
 project_path = "/Users/bilibili/Desktop/threewei/Sanwei/output_path"
 savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
@@ -76,6 +76,12 @@ pj_index_config = None
 # False = 强制不生成对称性
 symmetry_config = None
 
+# 直流塔三主杆图号和复合担架关系；None 表示执行原来的自动判断逻辑
+three_main_drawings = None
+# three_main_drawings = (4, 6)
+compound_pairs = None
+# compound_pairs = {3: 4, 5: 6}  # 外层担架: 靠塔内层担架
+
 tran2dto3d.tran2dto3d( danjia_dir=danjia_dir,
         tashen_dir=tashen_dir,
         project_path=project_path,
@@ -86,7 +92,9 @@ tran2dto3d.tran2dto3d( danjia_dir=danjia_dir,
         # drawing_type = "YangJiao")
         drawing_type = "ZhiLiu",
         pj_index_config=pj_index_config,
-        symmetry_config=symmetry_config )
+        symmetry_config=symmetry_config,
+        three_main_drawings=three_main_drawings,
+        compound_pairs=compound_pairs )
 
 
 # 1E2-SDJ依次输入：0  911  0.9

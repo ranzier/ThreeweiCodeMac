@@ -129,6 +129,8 @@ def tran2dto3d(
     drawing_type,
     pj_index_config=None,
     symmetry_config=None,
+    three_main_drawings=None,
+    compound_pairs=None,
 ):
 
     # 添加杆件的规格，另外记得在上面杆件代码中添加
@@ -158,7 +160,7 @@ def tran2dto3d(
 
     jiedian_danjia,ganjian_danjia= xintrans.work(
         danjia_dir, pinjie_tashen, drawing_type, tashen_dir,
-        pj_index_config, symmetry_config
+        pj_index_config, symmetry_config, three_main_drawings, compound_pairs
     )
     jiedian=jiedian_danjia+jiedian_tashen
     jiedian = format_xyz_coordinates(jiedian)
