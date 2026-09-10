@@ -10,6 +10,7 @@ from zhiliu_near_front_reconstruction import (
     build_zhiliu_outer_front_class1,
     build_zhiliu_outer_front_second_class,
     detect_zhiliu_near_front_class1_rods,
+    detect_zhiliu_stretcher_connection_side,
 )
 
 
@@ -1036,27 +1037,24 @@ def trans(
     is_compound_outer_stretcher = (
         drawing_type == "ZhiLiu" and drawing_id in compound_pairs
     )
-    is_direct_three_main_stretcher = (
-        is_three_main_stretcher and drawing_id not in compound_pairs.values()
-    )
     if is_three_main_stretcher:
         four_class1_roles = detect_zhiliu_near_front_class1_rods(
             coordinatesFront_data, yuzhi
         )
         rod_front_a, rod_front_b = four_class1_roles["main_rods"]
-        if is_direct_three_main_stretcher:
-            connection_side = "right" if drawing_id == 3 else "left"
-            endpoint_selector = min if connection_side == "left" else max
-            upper_front_rod, lower_front_rod = sorted(
-                (rod_front_a, rod_front_b),
-                key=lambda rod_id: endpoint_selector(
-                    coordinatesFront_data[rod_id], key=lambda point: point[0]
-                )[1],
-            )
-        else:
-            _, upper_front_rod, lower_front_rod = get_main_rod_connection_geometry(
-                coordinatesFront_data, rod_front_a, rod_front_b
-            )
+        connection_side = detect_zhiliu_stretcher_connection_side(
+            coordinatesFront_data,
+            (rod_front_a, rod_front_b),
+            "three_main",
+            yuzhi,
+        )
+        endpoint_selector = min if connection_side == "left" else max
+        upper_front_rod, lower_front_rod = sorted(
+            (rod_front_a, rod_front_b),
+            key=lambda rod_id: endpoint_selector(
+                coordinatesFront_data[rod_id], key=lambda point: point[0]
+            )[1],
+        )
     else:
         rod_front_a, rod_front_b = detect_main_rods_by_type(
             coordinatesFront_data, drawing_type
@@ -1111,10 +1109,7 @@ def trans(
                 jiandian_id,
                 (newx, newy, newz),
                 yuzhi,
-                (
-                    "right" if drawing_id == 3 else "left"
-                    if is_direct_three_main_stretcher else None
-                ),
+                connection_side,
             )
             zhiliu_projected_frames = (
                 build_zhiliu_near_projected_class1_frames(
@@ -1128,6 +1123,12 @@ def trans(
         # 03/05 是复合担架的外层：内端使用 04/06 回传的连接点，
         # 上、下外端仍分别由顶视图、底视图的原有尖点算法提供。
         elif is_compound_outer_stretcher:
+            connection_side = detect_zhiliu_stretcher_connection_side(
+                coordinatesFront_data,
+                (rod_front_a, rod_front_b),
+                "compound_outer",
+                yuzhi,
+            )
             upper_remote_xyz = calc_jiandian_xyz(
                 coordinatesOverhead_data,
                 drawing_id,
@@ -1142,7 +1143,7 @@ def trans(
                 jiandian_id,
                 (newx, newy, newz),
                 upper_remote_xyz,
-                "right" if drawing_id == 3 else "left",
+                connection_side,
             )
             zhiliu_projected_frames = (
                 build_zhiliu_near_projected_class1_frames(

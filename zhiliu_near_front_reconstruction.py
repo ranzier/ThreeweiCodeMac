@@ -25,6 +25,86 @@ def _dist_point_to_line(point, line_point1, line_point2):
     return abs((y2 - y1) * x0 - (x2 - x1) * y0 + x2 * y1 - y2 * x1) / denominator
 
 
+def _dist_point_to_segment(point, segment):
+    """返回点到有限线段的最短距离。"""
+    (x1, y1), (x2, y2) = segment
+    vx, vy = x2 - x1, y2 - y1
+    length_squared = vx * vx + vy * vy
+    if math.isclose(length_squared, 0.0, abs_tol=1e-9):
+        return _dist_points(point, segment[0])
+    ratio = ((point[0] - x1) * vx + (point[1] - y1) * vy) / length_squared
+    ratio = max(0.0, min(1.0, ratio))
+    projection = (x1 + ratio * vx, y1 + ratio * vy)
+    return _dist_points(point, projection)
+
+
+def detect_zhiliu_stretcher_connection_side(
+    coordinates_data,
+    main_rods,
+    structure_type,
+    threshold=150,
+):
+    """根据正视图几何识别直流塔担架连接端位于左侧还是右侧。
+
+    ``three_main`` 的 ``main_rods`` 顺序为水平主杆、斜主杆。斜主杆
+    落在水平主杆上的一端是担架内部端，其相反侧是塔身连接端。
+
+    ``compound_outer`` 的两根主杆近似水平；与内层担架连接的一侧，
+    两根主杆的 X 端点更对齐。
+    """
+    if len(main_rods) != 2:
+        raise ValueError("直流塔连接侧识别需要两根主杆")
+    rod_a, rod_b = main_rods
+    try:
+        points_a = coordinates_data[rod_a]
+        points_b = coordinates_data[rod_b]
+    except KeyError as exc:
+        raise ValueError(f"正视图缺少一类杆件 {exc.args[0]}") from exc
+    if len(points_a) != 2 or len(points_b) != 2:
+        raise ValueError("直流塔一类杆件必须各包含两个二维端点")
+
+    if structure_type == "three_main":
+        lower_points = points_a
+        diagonal_points = points_b
+        distances = [
+            _dist_point_to_segment(point, lower_points)
+            for point in diagonal_points
+        ]
+        internal_index = min(range(2), key=lambda index: distances[index])
+        if distances[internal_index] >= threshold:
+            raise ValueError(
+                f"直流塔斜主杆 {rod_b} 没有端点落在水平主杆 {rod_a} 上"
+            )
+        if math.isclose(
+            distances[0], distances[1], rel_tol=0.05, abs_tol=1.0
+        ):
+            raise ValueError(
+                f"直流塔斜主杆 {rod_b} 无法区分内部端和塔身连接端"
+            )
+        internal_x = diagonal_points[internal_index][0]
+        remote_x = diagonal_points[1 - internal_index][0]
+        if math.isclose(internal_x, remote_x, abs_tol=1e-9):
+            raise ValueError(f"直流塔斜主杆 {rod_b} 为竖直杆，无法判断连接侧")
+        internal_side = "left" if internal_x < remote_x else "right"
+        return "right" if internal_side == "left" else "left"
+
+    if structure_type == "compound_outer":
+        left_a = min(points_a, key=lambda point: point[0])
+        left_b = min(points_b, key=lambda point: point[0])
+        right_a = max(points_a, key=lambda point: point[0])
+        right_b = max(points_b, key=lambda point: point[0])
+        left_gap = abs(left_a[0] - left_b[0])
+        right_gap = abs(right_a[0] - right_b[0])
+        if math.isclose(left_gap, right_gap, rel_tol=0.05, abs_tol=1.0):
+            raise ValueError(
+                f"直流塔外层主杆 {rod_a}、{rod_b} 左右端对齐程度相同，"
+                "无法判断连接侧"
+            )
+        return "left" if left_gap < right_gap else "right"
+
+    raise ValueError(f"未知的直流塔担架结构类型: {structure_type}")
+
+
 def detect_zhiliu_near_front_class1_rods(coordinates_data, threshold=150):
     """识别靠塔担架正视图的两根一类主杆和一根一类副杆。"""
     def vertical_ratio(rod_id):
