@@ -15,7 +15,7 @@ import tran2dto3d
 
 
 
-# 鼓楼
+# 鼓型塔
 # danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/1E2-SDJ"
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/1E2-SDJ"
 # danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/J1"
@@ -42,10 +42,10 @@ import tran2dto3d
 # tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/Y7850"
 
 # 直流
-# danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/JC27302"
-# tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/JC27302"
-danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/jg301"
-tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/jg301"
+danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/JC27302"
+tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/JC27302"
+# danjia_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/DanJia/jg301"
+# tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/jg301"
 
 project_path = "/Users/bilibili/Desktop/threewei/Sanwei/output_path"
 savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
@@ -57,7 +57,7 @@ savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
 """
 drawing_type：图纸类型 
 分为五类：
-1. GuLou(鼓楼型)：1E2-SDJ、J1、J3、J4、Z1
+1. GuXing(鼓型塔)：1E2-SDJ、J1、J3、J4、Z1
 2. ShangZi(上字型)：T7833、781
 3. GanZi(干字型)：7837
 4. YangJiao(羊角型): Y7850
@@ -86,10 +86,10 @@ tran2dto3d.tran2dto3d( danjia_dir=danjia_dir,
         tashen_dir=tashen_dir,
         project_path=project_path,
         savepath_ui=savepath_ui,
-        # drawing_type ="GuLou")
-        # drawing_type = "ShangZi")
-        # drawing_type = "GanZi")
-        # drawing_type = "YangJiao")
+        # drawing_type ="GuXing",
+        # drawing_type = "ShangZi",
+        # drawing_type = "GanZi",
+        # drawing_type = "YangJiao",
         drawing_type = "ZhiLiu",
         pj_index_config=pj_index_config,
         symmetry_config=symmetry_config,

@@ -967,10 +967,10 @@ def trans(
         # 7837/01 位于塔身左侧，7837/02 位于塔身右侧。
         pj = [pj[i] for i in (1, 2)]
     # J1,Z1
-    elif drawing_type == "GuLou" and count_txt_files(os.path.dirname(file_path)) == 4:
+    elif drawing_type == "GuXing" and count_txt_files(os.path.dirname(file_path)) == 4:
         pj = [pj[i] for i in (0, 2, 4, 6)]
     # J3,J4
-    elif drawing_type == "GuLou" and count_txt_files(os.path.dirname(file_path)) == 8:
+    elif drawing_type == "GuXing" and count_txt_files(os.path.dirname(file_path)) == 8:
         if is_first_stretcher_apex_on_left(file_path, drawing_type):
             pj = [pj[i] for i in (1, 0, 3, 2, 5, 4, 7, 6)]
     elif drawing_type == "YangJiao":
@@ -2097,8 +2097,8 @@ def trans(
             if j.get("symmetry_type") == 2:
                 j["symmetry_type"] = 4
 
-   #===== GuLou 型 4 个担架对称性生成 =====
-    if symmetry_config is None and drawing_type == "GuLou" and count_txt_files(os.path.dirname(file_path)) == 4:
+   #===== GuXing 型 4 个担架对称性生成 =====
+    if symmetry_config is None and drawing_type == "GuXing" and count_txt_files(os.path.dirname(file_path)) == 4:
         for g in ganjian:
             if g.get("symmetry_type") == 2:
                 g["symmetry_type"] = 4
