@@ -2,6 +2,10 @@ import xintrans
 import tower_body_reconstruction
 import stretcher_tower_connection
 import yangjiao_pinjie
+from member_specifications import (
+    add_member_specifications,
+    load_member_specifications,
+)
 import pandas as pd
 import os
 
@@ -98,10 +102,10 @@ def create_excel_pandas(nodes, members, filename='structure_data.xlsx'):
         
         # 创建杆件DataFrame
         members_df = pd.DataFrame(members)
-        members_df = members_df[['member_id','node1_id', 'node2_id', 'symmetry_type']]
-        members_df.columns = ['杆件编号','起点节点', '终点节点', '对称性']
-        # members_df = members_df[['member_id','node1_id', 'node2_id', 'specifications','symmetry_type']]
-        # members_df.columns = ['杆件编号','起点节点', '终点节点', '规格','对称性']
+        members_df = members_df[
+            ['member_id', 'node1_id', 'node2_id', 'symmetry_type', 'specifications']
+        ]
+        members_df.columns = ['杆件编号', '起点节点', '终点节点', '对称性', '规格']
 
         # 写入Excel文件
         with pd.ExcelWriter(filename, engine='openpyxl') as writer:
@@ -131,18 +135,8 @@ def tran2dto3d(
     symmetry_config=None,
     three_main_drawings=None,
     compound_pairs=None,
+    specifications_path=None,
 ):
-
-    # 添加杆件的规格，另外记得在上面杆件代码中添加
-    # from v7 import ImageProcessor
-    # numandtableDetector = ImageProcessor()
-    # specs = {}
-    # for root, dirs, files in os.walk(r"D:\Sanwei\table\1E2-SDJ"):
-    #     for file in files:
-    #         file_path = os.path.join(root, file)
-    #         specs.update(numandtableDetector.extract_table_specs(file_path))
-
-
     ganjian_tashen, jiedian_tashen, pinjie_tashen = tower_body_reconstruction.build_tower_body(
         tashen_dir, drawing_type=drawing_type
     )
@@ -167,10 +161,26 @@ def tran2dto3d(
     savepath=os.path.join(project_path, "3d_result")
     if not os.path.exists(savepath):
         os.makedirs(savepath)
+    specifications = (
+        load_member_specifications(specifications_path)
+        if specifications_path
+        else {}
+    )
+    missing_danjia = add_member_specifications(
+        ganjian_danjia,
+        specifications,
+        prefer_numeric_instance_suffix=True,
+    )
+    missing_tashen = add_member_specifications(ganjian_tashen, specifications)
     ganjian=ganjian_danjia+ganjian_tashen
 
-    # for item in ganjian:
-    #     item['specifications'] = specs[item['member_id']]
+    if specifications_path:
+        missing_member_ids = sorted(set(missing_danjia + missing_tashen))
+        if missing_member_ids:
+            print(
+                "警告：以下杆件在规格文件中没有匹配项，规格将留空："
+                + ", ".join(missing_member_ids)
+            )
 
     create_excel_pandas(jiedian, ganjian, os.path.join(savepath, 'chushi_data.xlsx'))
     create_excel_pandas(jiedian, ganjian, os.path.join(savepath_ui, 'chushi_data.xlsx'))

@@ -49,9 +49,9 @@ tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/JC27302"
 
 project_path = "/Users/bilibili/Desktop/threewei/Sanwei/output_path"
 savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
+specifications_path = "/Users/bilibili/Desktop/threewei/Sanwei/table/JC27302/guige.txt"
 
 
-# todo: 通用性适配
 
 
 """
@@ -94,7 +94,8 @@ tran2dto3d.tran2dto3d( danjia_dir=danjia_dir,
         pj_index_config=pj_index_config,
         symmetry_config=symmetry_config,
         three_main_drawings=three_main_drawings,
-        compound_pairs=compound_pairs )
+        compound_pairs=compound_pairs,
+        specifications_path=specifications_path )
 
 
 # 1E2-SDJ依次输入：0  911  0.9
