@@ -21,6 +21,7 @@ import dual_view_processor as dual_main
 import io_utils as rw
 import single_view_processor as sv
 import sv_class1_transform as t1
+import tower_foot_processor as tfp
 from asymmetric_tower_normalizer import normalize_asymmetric_tower_view
 
 Point3D = Tuple[float, float, float]
@@ -193,8 +194,11 @@ def autodetect_and_stage(root_dir: str) -> Tuple[str, str]:
 
     txts = sorted(glob.glob(os.path.join(root_dir, "*.txt")), key=_drawing_sort_key)
     for p in txts:
-        mode = detect_dataset_type(p)
         basename = os.path.basename(p)
+        if tfp.is_half_front_only_file(p):
+            print(f"[auto] {basename} -> 塔脚独立处理")
+            continue
+        mode = detect_dataset_type(p)
         if mode == "dual":
             shutil.copy2(p, os.path.join(dual_dir, basename))
             print(f"[auto] {basename} -> 双视图(A线)")
@@ -1070,9 +1074,29 @@ def run(
     return _apply_yangjiao_pinjie_if_needed(*merged, tashen_dir, drawing_type)
 
 
+def _attach_half_front_foot(
+    root_dir: str,
+    result: Tuple[List[dict], List[dict], List[list]],
+) -> Tuple[List[dict], List[dict], List[list]]:
+    """Append the special tower foot without entering the A/B algorithms."""
+
+    ganjian, jiedian, pinjie = result
+    path = os.path.join(root_dir, tfp.FOOT_FILENAME)
+    if not tfp.is_half_front_only_file(path):
+        return result
+    foot_ganjian, foot_jiedian = tfp.attach_half_front_foot(path, ganjian, jiedian)
+    print(
+        f"[塔脚] {os.path.basename(path)} 独立补齐完成："
+        f"杆件 {len(foot_ganjian) - len(ganjian)}，"
+        f"新增节点 {len(foot_jiedian) - len(jiedian)}"
+    )
+    return foot_ganjian, foot_jiedian, pinjie
+
+
 def run_autodetect(root_dir: str, drawing_type: Optional[str] = None):
     dual_dir, single_dir = autodetect_and_stage(root_dir)
-    return run(dual_dir, single_dir, tashen_dir=root_dir, drawing_type=drawing_type)
+    result = run(dual_dir, single_dir, tashen_dir=root_dir, drawing_type=drawing_type)
+    return _attach_half_front_foot(root_dir, result)
 
 
 def build_tower_body(tashen_dir, drawing_type: Optional[str] = None):
@@ -1091,7 +1115,7 @@ def build_tower_body(tashen_dir, drawing_type: Optional[str] = None):
 def main():
     """命令行入口，可选传入数据目录。"""
 
-    default_data_directory = r"D:\SanWei\zuobiao\TaShen\Y7850"
+    default_data_directory = r"D:\SanWei\zuobiao\TaShen\JC27302"
 
     if len(sys.argv) > 1:
         data_directory = sys.argv[1]

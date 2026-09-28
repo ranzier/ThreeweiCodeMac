@@ -11,9 +11,33 @@
 """
 
 import os
+import math
 import io_utils as rw
 import sv_class1_transform as t1
 import sv_class2_transform as t21
+from asymmetric_tower_normalizer import normalize_asymmetric_tower_view
+
+
+def _normalize_node_ref(value):
+    """Normalize node references such as 901_220 to the generated 901220 id."""
+    if isinstance(value, str):
+        return value.replace("_", "")
+    return value
+
+
+def _normalize_single_view_node_refs(ganjian, jiedian):
+    """Keep node ids and node references in the same underscore-free format."""
+    for member in ganjian or []:
+        for key in ("node1_id", "node2_id"):
+            if key in member:
+                member[key] = _normalize_node_ref(str(member[key]))
+
+    for node in jiedian or []:
+        if "node_id" in node:
+            node["node_id"] = _normalize_node_ref(str(node["node_id"]))
+        for key in ("X", "Y", "Z"):
+            if key in node:
+                node[key] = _normalize_node_ref(node[key])
 
 
 # # =============== 一二类间修正相关子函数 ===============
@@ -274,34 +298,35 @@ def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, li
         if not isinstance(value, str) or len(value) < 2:
             return value
 
-        if value in alias_node_map:
-            return alias_node_map[value]
+        normalized_value = _normalize_node_ref(value)
+        if normalized_value in alias_node_map:
+            return alias_node_map[normalized_value]
 
-        if value.startswith("1") and value[1:] in alias_node_map:
-            return f"1{alias_node_map[value[1:]]}"
+        if normalized_value.startswith("1") and normalized_value[1:] in alias_node_map:
+            return f"1{alias_node_map[normalized_value[1:]]}"
 
-        prefix = value[:-1]
-        suffix = value[-1]
+        prefix = normalized_value[:-1]
+        suffix = normalized_value[-1]
         if prefix in alias_prefix_map:
             return f"{alias_prefix_map[prefix]}{suffix}"
 
-        if value.startswith("1") and len(value) >= 3:
-            raw_value = value[1:]
+        if normalized_value.startswith("1") and len(normalized_value) >= 3:
+            raw_value = normalized_value[1:]
             raw_prefix = raw_value[:-1]
             raw_suffix = raw_value[-1]
             if raw_prefix in alias_prefix_map:
                 return f"1{alias_prefix_map[raw_prefix]}{raw_suffix}"
 
-        return value
+        return normalized_value
 
     node_lookup = {
-        str(node.get("node_id", "")): node
+        _normalize_node_ref(str(node.get("node_id", ""))): node
         for node in lines0201_jiedian
     }
 
     def _resolved_xyz(node_id, resolving=None):
         """Resolve an in-sheet type-12 node before selecting a seam alias."""
-        node_id = str(node_id)
+        node_id = _normalize_node_ref(str(node_id))
         resolving = set() if resolving is None else resolving
         if node_id in resolving:
             return None
@@ -369,10 +394,11 @@ def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, li
         return f"{target_id[:-1]}{suffix}"
 
     def _replace_member_endpoint(old_node_id, new_node_id):
+        old_node_id = _normalize_node_ref(str(old_node_id))
         for member in lines0201_ganjian:
-            if str(member["node1_id"]) == old_node_id:
+            if _normalize_node_ref(str(member["node1_id"])) == old_node_id:
                 member["node1_id"] = new_node_id
-            if str(member["node2_id"]) == old_node_id:
+            if _normalize_node_ref(str(member["node2_id"])) == old_node_id:
                 member["node2_id"] = new_node_id
 
     def _member_base(member_id):
@@ -382,18 +408,18 @@ def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, li
         return text
 
     min_z_node = min(lines01_jiedian, key=lambda x: x["Z"])
-    min_id = str(min_z_node["node_id"])
+    min_id = _normalize_node_ref(str(min_z_node["node_id"]))
     min_z = min_z_node["Z"]
 
     max_z_node = max(lines01_jiedian, key=lambda x: x["Z"])
-    max_id = str(max_z_node["node_id"])
+    max_id = _normalize_node_ref(str(max_z_node["node_id"]))
     max_z = max_z_node["Z"]
 
     alias_prefix_map = {}
     alias_node_map = {}
     merged_node_ids = set()
     protected_prefixes = set()
-    node_id_set = {str(node.get("node_id", "")) for node in lines0201_jiedian}
+    node_id_set = {_normalize_node_ref(str(node.get("node_id", ""))) for node in lines0201_jiedian}
 
     # Protect rods that are themselves class-1 trunks (..01 / ..02) and
     # selected tier2 X-members from being collapsed onto the single global
@@ -404,21 +430,22 @@ def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, li
     for member in lines0201_ganjian:
         member_base = _member_base(member.get("member_id", ""))
         if len(member_base) >= 2 and member_base[-2:] in protected_member_suffixes:
-            protected_prefixes.add(str(member.get("node1_id", ""))[:-1])
-            protected_prefixes.add(str(member.get("node2_id", ""))[:-1])
+            protected_prefixes.add(_normalize_node_ref(str(member.get("node1_id", "")))[:-1])
+            protected_prefixes.add(_normalize_node_ref(str(member.get("node2_id", "")))[:-1])
 
     for node in lines0201_jiedian:
         for coord_key in ("X", "Y", "Z"):
             ref_id = node.get(coord_key)
             if not isinstance(ref_id, str):
                 continue
+            ref_id = _normalize_node_ref(ref_id)
             if ref_id in node_id_set:
                 protected_prefixes.add(ref_id[:-1])
             elif ref_id.startswith("1") and ref_id[1:] in node_id_set:
                 protected_prefixes.add(ref_id[1:-1])
 
     for node in lines0201_jiedian:
-        temp_id = str(node["node_id"])
+        temp_id = _normalize_node_ref(str(node["node_id"]))
         temp_prefix = temp_id[:-1]
 
         # Side-face nodes are physical rotations.  Sharing a height with a
@@ -466,137 +493,131 @@ def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, li
 
         lines0201_jiedian = [
             node for node in lines0201_jiedian
-            if str(node.get("node_id")) not in merged_node_ids
+            if _normalize_node_ref(str(node.get("node_id"))) not in merged_node_ids
         ]
 
     return lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian
 
 
 def connect_single_inner(prev_jiedian01, lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian):
-    """
-    单正面内部多图幅拼接函数
-    
-    主要逻辑：
-    1. 找到前一张图中一类节点的Z最大值节点作为基准
-    2. 找到当前图中一类节点的Z最小值节点作为对齐点
-    3. 计算缩放比例k和Z轴平移量b
-    4. 对当前图的所有节点和杆件进行缩放和平移变换
-    5. 更新节点ID映射关系
-    
-    参数：
-        prev_jiedian01: 前一张图的一类节点列表
-        lines01_ganjian: 当前图的一类杆件列表
-        lines01_jiedian: 当前图的一类节点列表
-        lines0201_ganjian: 当前图的二类杆件列表
-        lines0201_jiedian: 当前图的二类节点列表
-    
-    返回：
-        变换后的 (lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian)
-    """
-    # 找到前一张图中一类节点的Z最大值节点
+    """拼接相邻单视图图幅，并复用真实导出节点的接口。"""
     if not prev_jiedian01:
         return lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian
-    
-    prev_interface = _pick_interface_layer(prev_jiedian01, "top")
-    if prev_interface is None:
-        return lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian
 
-    prev_max_node = prev_interface["node"]
-    prev_key = str(prev_max_node["node_id"])
-    
-    # 找到当前图中一类节点的Z最小值节点
-    if not lines01_jiedian:
+    def _pick_exported_interface(nodes, mode):
+        candidates = []
+        for node in nodes or []:
+            if int(node.get("node_type", 0) or 0) != 11:
+                continue
+            if node.get("_view_face") not in (None, "front"):
+                continue
+            xyz = _get_numeric_xyz(node)
+            if xyz is not None:
+                candidates.append((node, xyz))
+        if not candidates:
+            return None
+        z_ref = max(p[2] for _, p in candidates) if mode == "top" else min(p[2] for _, p in candidates)
+        layer = [(node, p) for node, p in candidates if abs(p[2] - z_ref) <= 0.08]
+        if not layer:
+            layer = [max(candidates, key=lambda item: item[1][2]) if mode == "top" else min(candidates, key=lambda item: item[1][2])]
+        xs = [p[0] for _, p in layer]
+        ys = [p[1] for _, p in layer]
+        x_span = max(xs) - min(xs)
+        if x_span > 1e-9:
+            center_x = (min(xs) + max(xs)) / 2.0
+            half_width = x_span / 2.0
+        else:
+            # A normalized high/low-slope drawing exports only its trusted
+            # physical support; the opposite support is virtual.  The lone
+            # endpoint therefore represents one tower half-width, not a
+            # zero-width interface.  Treating it as 1e-9 produces an enormous
+            # splice scale and turns every member in the sheet into a nearly
+            # infinite line.
+            center_x = 0.0
+            half_width = abs(xs[0])
+
+        return {"node": layer[0][0], "z": z_ref,
+                "center_x": center_x,
+                "center_y": (min(ys) + max(ys)) / 2.0,
+                "half_width": max(half_width, 1e-9)}
+
+    prev_interface = _pick_exported_interface(prev_jiedian01, "top")
+    if prev_interface is None or not lines01_jiedian:
         return lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian
-    
-    now_interface = _pick_interface_layer(lines01_jiedian, "bottom")
+    now_interface = _pick_exported_interface(lines0201_jiedian, "bottom")
     if now_interface is None:
         return lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian
 
-    now_min_node = now_interface["node"]
-    now_key = str(now_min_node["node_id"])
-    
-    # Keep tier1 main-leg families (..01/..02) local to the current sheet.
-    # They act as the current file's concrete output and should not be renamed
-    # onto the previous sheet's reference IDs during inner stitching.
-    protected_prefixes = set()
-    for member in lines0201_ganjian:
-        member_id = str(member.get("member_id", "")).split("_")[0]
-        if not member_id.endswith(("01", "02")):
-            continue
-        for node_key in ("node1_id", "node2_id"):
-            node_id = member.get(node_key)
-            if isinstance(node_id, str) and len(node_id) >= 1:
-                protected_prefixes.add(node_id[:-1])
+    prev_key = str(prev_interface["node"].get("node_id", ""))
+    now_key = str(now_interface["node"].get("node_id", ""))
+    if not prev_key or not now_key:
+        return lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian
 
-    # Align the current sheet to the previous sheet by the interface half-width
-    # and center. Z keeps its own scale and is only shifted onto the seam.
-    if abs(now_interface["half_width"]) < 1e-9:
-        xy_scale = 1.0
-    else:
-        xy_scale = abs(prev_interface["half_width"]) / abs(now_interface["half_width"])
-
+    xy_scale = (abs(prev_interface["half_width"]) / abs(now_interface["half_width"])
+                if abs(now_interface["half_width"]) >= 1e-9 else 1.0)
     x_shift = prev_interface["center_x"] - now_interface["center_x"] * xy_scale
     y_shift = prev_interface["center_y"] - now_interface["center_y"] * xy_scale
     z_shift = prev_interface["z"] - now_interface["z"]
-    
-    # Apply the same sheet transform to both the reference skeleton and the
-    # exported nodes. String references are kept as node references.
+
     _apply_single_view_transform(lines01_jiedian, xy_scale, x_shift, y_shift, z_shift)
-    
-    # 删除一类节点中与now_key相同的节点（避免重复）
-    lines01_jiedian = [node for node in lines01_jiedian if node["node_id"] != now_key]
-    
     _apply_single_view_transform(lines0201_jiedian, xy_scale, x_shift, y_shift, z_shift)
-    
-    # 处理二类节点的X和Y（这里是字符串ID，需要替换）
-    for node in lines0201_jiedian:
-        x_val = node.get("X")
-        y_val = node.get("Y")
-        if (
-            isinstance(x_val, str)
-            and len(x_val) >= 1
-            and len(now_key) >= 1
-            and x_val[:-1] == now_key[:-1]
-            and x_val[:-1] not in protected_prefixes
-        ):
-            node["X"] = f"{prev_key[:-1]}{x_val[-1]}"
-        if (
-            isinstance(y_val, str)
-            and len(y_val) >= 1
-            and len(now_key) >= 1
-            and y_val[:-1] == now_key[:-1]
-            and y_val[:-1] not in protected_prefixes
-        ):
-            node["Y"] = f"{prev_key[:-1]}{y_val[-1]}"
-    
-    # 处理一类杆件的node1_id和node2_id
-    for member in lines01_ganjian:
-        # 处理node1_id：如果除最后一位外与now_key相同，则替换为prev_key
-        if len(member["node1_id"]) >= 1 and len(now_key) >= 1 and member["node1_id"][:-1] == now_key[:-1]:
-            member["node1_id"] = f"{prev_key[:-1]}{member['node1_id'][-1]}"
-        # 处理node2_id：同理
-        if len(member["node2_id"]) >= 1 and len(now_key) >= 1 and member["node2_id"][:-1] == now_key[:-1]:
-            member["node2_id"] = f"{prev_key[:-1]}{member['node2_id'][-1]}"
-    
-    # 处理二类杆件的node1_id和node2_id
+
+    previous_seam = []
+    for node in prev_jiedian01 or []:
+        if int(node.get("node_type", 0) or 0) != 11 or node.get("_view_face") not in (None, "front"):
+            continue
+        xyz = _get_numeric_xyz(node)
+        if xyz is not None and abs(xyz[2] - prev_interface["z"]) <= 0.08:
+            previous_seam.append((node, xyz))
+    current_seam = []
+    for node in lines0201_jiedian or []:
+        if int(node.get("node_type", 0) or 0) != 11 or node.get("_view_face") not in (None, "front"):
+            continue
+        xyz = _get_numeric_xyz(node)
+        if xyz is not None and abs(xyz[2] - prev_interface["z"]) <= 0.08:
+            current_seam.append((node, xyz))
+
+    seam_id_map = {}
+    used_current, used_previous = set(), set()
+    for distance, current_node, previous_node in sorted(
+        ((math.dist(cp, pp), cn, pn) for cn, cp in current_seam for pn, pp in previous_seam),
+        key=lambda item: item[0],
+    ):
+        current_id = str(current_node.get("node_id", ""))
+        previous_id = str(previous_node.get("node_id", ""))
+        if not current_id or not previous_id or distance > 0.15:
+            continue
+        if current_id in used_current or previous_id in used_previous or current_id == previous_id:
+            continue
+        seam_id_map[current_id] = previous_id
+        used_current.add(current_id); used_previous.add(previous_id)
+
+    def _remap_seam_reference(value):
+        """Remap an interface node together with its symmetry siblings."""
+        value_text = str(value)
+        if value_text in seam_id_map:
+            return seam_id_map[value_text]
+
+        for current_id, previous_id in seam_id_map.items():
+            if (
+                len(value_text) == len(current_id)
+                and value_text[:-1] == current_id[:-1]
+                and value_text[-1] in "0123"
+            ):
+                return f"{previous_id[:-1]}{value_text[-1]}"
+        return value
+
     for member in lines0201_ganjian:
-        # 处理node1_id：如果除最后一位外与now_key相同，则替换为prev_key
-        if (
-            len(member["node1_id"]) >= 1
-            and len(now_key) >= 1
-            and member["node1_id"][:-1] == now_key[:-1]
-            and member["node1_id"][:-1] not in protected_prefixes
-        ):
-            member["node1_id"] = f"{prev_key[:-1]}{member['node1_id'][-1]}"
-        # 处理node2_id：同理
-        if (
-            len(member["node2_id"]) >= 1
-            and len(now_key) >= 1
-            and member["node2_id"][:-1] == now_key[:-1]
-            and member["node2_id"][:-1] not in protected_prefixes
-        ):
-            member["node2_id"] = f"{prev_key[:-1]}{member['node2_id'][-1]}"
-    
+        member["node1_id"] = _remap_seam_reference(member.get("node1_id"))
+        member["node2_id"] = _remap_seam_reference(member.get("node2_id"))
+    for node in lines0201_jiedian:
+        if str(node.get("node_id", "")) in seam_id_map:
+            continue
+        for key in ("X", "Y", "Z"):
+            if isinstance(node.get(key), str):
+                node[key] = _remap_seam_reference(node[key])
+    lines0201_jiedian = [node for node in lines0201_jiedian if str(node.get("node_id", "")) not in seam_id_map]
+
     return lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian
 
 
@@ -677,12 +698,34 @@ def single_view(filelist, filepath):
             continue
 
         # 调用一类和二类杆件转换函数
-        lines01_ganjian, lines01_jiedian = t1.single_view01(line_coord)
+        normalization = normalize_asymmetric_tower_view(line_coord)
+        main_rod_ids = None
+        symmetry_axis = None
+        if normalization.applied:
+            line_coord = normalization.coordinates
+            main_rod_ids = normalization.main_rod_ids or None
+            symmetry_axis = normalization.symmetry_axis
+            print(
+                f"[高低坡归一化] {os.path.basename(file_path)}: "
+                f"保留 {normalization.source_side} 侧主杆 "
+                f"{normalization.main_rod_ids[0]}，删除 "
+                f"{len(normalization.removed_ids)} 根短侧杆件"
+            )
+
+        lines01_ganjian, lines01_jiedian = t1.single_view01(
+            line_coord,
+            main_rod_ids=main_rod_ids,
+            symmetry_axis=symmetry_axis,
+        )
         lines0201_ganjian, lines0201_jiedian = t21.single_view0201(
             line_coord,
             front_only=False,
             keep_view_face=True,
+            main_rod_ids=main_rod_ids,
+            symmetry_axis=symmetry_axis,
         )
+        _normalize_single_view_node_refs(lines01_ganjian, lines01_jiedian)
+        _normalize_single_view_node_refs(lines0201_ganjian, lines0201_jiedian)
         
         # 进行一二类间修正
         lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian = correct_single_lines(
@@ -701,15 +744,18 @@ def single_view(filelist, filepath):
             lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian = connect_single_inner(
                 prev_jiedian01, lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian
             )
+            _normalize_single_view_node_refs(lines01_ganjian, lines01_jiedian)
+            _normalize_single_view_node_refs(lines0201_ganjian, lines0201_jiedian)
 
             res_ganjian.extend(lines0201_ganjian)
 
             res_jiedian.extend(lines0201_jiedian)
 
         # 只保留当前图，下一张图只和上一张图对接，避免跨图号回连
-        prev_jiedian01 = list(lines01_jiedian)
+        prev_jiedian01 = list(lines0201_jiedian)
     
     # 节点格式修正
+    _normalize_single_view_node_refs(res_ganjian, res_jiedian)
     res_jiedian = correct_format_jiedian(res_jiedian)
     for node in res_jiedian:
         node.pop("_view_face", None)
