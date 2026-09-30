@@ -2,6 +2,11 @@ import math
 import io_utils as rw
 from sv_class1_transform import extract_target_members
 
+
+# CAD coordinates are millimetres; reconstructed single-view coordinates are metres.
+EPS = 150.0
+NODE_REUSE_TOLERANCE = EPS / 1000.0
+
 # ================= 核心工具 =================
 def dist_pt_seg(p, a, b):
     """计算点到线段的最短距离，用于容差吸附"""
@@ -50,7 +55,6 @@ def build_projector(lines01):
 
     left_line = min(left_group, key=lambda s: min(s[0][0], s[1][0]))
     right_line = max(right_group, key=lambda s: max(s[0][0], s[1][0]))
-    center_x_avg = (left_line[0][0] + right_line[0][0]) / 2.0
 
     y_min = min(left_line[0][1], left_line[1][1], right_line[0][1], right_line[1][1])
     y_max = max(left_line[0][1], left_line[1][1], right_line[0][1], right_line[1][1])
@@ -60,6 +64,11 @@ def build_projector(lines01):
         (x1, y1), (x2, y2) = line
         if abs(y2 - y1) < 1e-9: return (x1+x2)/2.0
         return x1 + (y - y1)*(x2-x1)/(y2-y1)
+
+    # CAD segments are not guaranteed to use the same endpoint order.  Using
+    # left_line[0]/right_line[0] can therefore average one upper endpoint with
+    # one lower endpoint and move the detected tower axis hundreds of units.
+    center_x_avg = (get_x(y_min, left_line) + get_x(y_min, right_line)) / 2.0
 
     w_top = abs(get_x(y_min, right_line) - get_x(y_min, left_line))
     w_bot = abs(get_x(y_max, right_line) - get_x(y_max, left_line))
@@ -132,7 +141,7 @@ def _legacy_single_view0201(line_coord):
 
     # ================= 拓扑分类准备 =================
     unclassified = {k: v for k, v in line_coord.items() if k not in lines01}
-    TOLERANCE = 35.0
+    TOLERANCE = EPS
 
     def find_host(pt, host_dict):
         best_d = float("inf")
@@ -405,6 +414,7 @@ def _register_member_from_nodes(
         member_specs[connection_key] = {
             "member_id": str(member_id),
             "symmetry_type": int(symmetry_type),
+            "variant": str(variant),
             "preferred_nodes": tuple(str(node_id) for node_id in node_ids),
         }
         member_order.append(connection_key)
@@ -446,7 +456,21 @@ def _register_member_from_nodes(
             )
 
 
-def _build_members_from_node_records(node_records, member_specs, member_order, debug_member_trace=False):
+def _build_members_from_node_records(
+    node_records,
+    member_specs,
+    member_order,
+    resolve_node_xyz=None,
+    debug_member_trace=False,
+):
+    source_id_counts = {}
+    for connection_key in member_order:
+        source_id = str(member_specs[connection_key]["member_id"])
+        source_id_counts[source_id] = source_id_counts.get(source_id, 0) + 1
+
+    source_id_seen = {}
+    reserved_source_ids = set(source_id_counts)
+    used_output_ids = set()
     ganjian = []
     for connection_key in member_order:
         spec = member_specs[connection_key]
@@ -459,20 +483,76 @@ def _build_members_from_node_records(node_records, member_specs, member_order, d
                 f"[TRACE build] connection_key={connection_key} "
                 f"-> endpoints={endpoints} (count={len(endpoints)})"
             )
-        if len(endpoints) != 2:
+        if len(endpoints) < 2:
             print(f"[警告] 杆件 {spec['member_id']} 找到 {len(endpoints)} 个端点，已跳过")
             continue
 
         preferred = list(spec["preferred_nodes"])
         ordered = [node_id for node_id in preferred if node_id in endpoints]
         ordered.extend(node_id for node_id in endpoints if node_id not in ordered)
-        node1_id, node2_id = ordered[0], ordered[1]
-        ganjian.append({
-            "member_id": spec["member_id"],
-            "node1_id": node1_id,
-            "node2_id": node2_id,
-            "symmetry_type": spec["symmetry_type"],
-        })
+        endpoint_pairs = [(ordered[0], ordered[1])]
+        if len(endpoints) > 2:
+            if resolve_node_xyz is None:
+                print(
+                    f"[警告] 杆件 {spec['member_id']} 找到 {len(endpoints)} 个端点，"
+                    "但没有坐标解析器，已跳过"
+                )
+                continue
+            start_point = resolve_node_xyz(ordered[0])
+            end_point = resolve_node_xyz(ordered[1])
+            if start_point is None or end_point is None:
+                print(f"[警告] 杆件 {spec['member_id']} 的分段端点无法解析，已跳过")
+                continue
+            direction = tuple(end_point[index] - start_point[index] for index in range(3))
+            length_squared = sum(value * value for value in direction)
+            if length_squared <= 1e-18:
+                print(f"[警告] 杆件 {spec['member_id']} 两端重合，已跳过")
+                continue
+
+            positioned = []
+            for node_id in endpoints:
+                point = resolve_node_xyz(node_id)
+                if point is None:
+                    continue
+                parameter = sum(
+                    (point[index] - start_point[index]) * direction[index]
+                    for index in range(3)
+                ) / length_squared
+                positioned.append((parameter, str(node_id)))
+            positioned.sort(key=lambda item: (item[0], item[1]))
+            endpoint_pairs = [
+                (positioned[index][1], positioned[index + 1][1])
+                for index in range(len(positioned) - 1)
+                if positioned[index][1] != positioned[index + 1][1]
+            ]
+
+        source_member_id = str(spec["member_id"])
+        for node1_id, node2_id in endpoint_pairs:
+            instance_index = source_id_seen.get(source_member_id, 0) + 1
+            source_id_seen[source_member_id] = instance_index
+
+            # A single front drawing exports one front-face family and one
+            # rotated side-face family. Splitting at real contacts can create
+            # further physical instances; every row therefore needs a unique
+            # collision-safe ID while retaining the source ID prefix.
+            output_member_id = source_member_id
+            if instance_index > 1:
+                suffix = instance_index
+                output_member_id = f"{source_member_id}_{suffix}"
+                while (
+                    output_member_id in used_output_ids
+                    or output_member_id in reserved_source_ids
+                ):
+                    suffix += 1
+                    output_member_id = f"{source_member_id}_{suffix}"
+            used_output_ids.add(output_member_id)
+
+            ganjian.append({
+                "member_id": output_member_id,
+                "node1_id": node1_id,
+                "node2_id": node2_id,
+                "symmetry_type": spec["symmetry_type"],
+            })
     return ganjian
 
 
@@ -528,6 +608,7 @@ def _export_debug_node_records(node_records):
             "_front_xy": record.get("_front_xy"),
             "_member_links": list(record.get("_member_links", [])),
             "_export": bool(record.get("_export", False)),
+            "_view_face": record.get("_view_face", "front"),
         })
     return debug_nodes
 
@@ -537,7 +618,7 @@ def single_view0201(
     debug_member_links=False,
     return_debug_nodes=False,
     debug_member_trace=False,
-    front_only=True,
+    front_only=False,
     keep_view_face=False,
     main_rod_ids=None,
     symmetry_axis=None,
@@ -569,11 +650,50 @@ def single_view0201(
     projector, center_x_cad = proj_result
 
     special_bar_id = node_id_base(next(iter(lines01.keys())))
+    def has_explicit_mirror_pair(raw_member_id):
+        """Return whether the front drawing already contains the mirrored rod."""
+
+        source_segment = line_coord.get(raw_member_id)
+        if not source_segment or len(source_segment) != 2:
+            return False
+
+        mirrored = [
+            (2.0 * center_x_cad - float(point[0]), float(point[1]))
+            for point in source_segment
+        ]
+
+        def endpoint_error(candidate):
+            direct = max(
+                math.dist(mirrored[0], candidate[0]),
+                math.dist(mirrored[1], candidate[1]),
+            )
+            reversed_error = max(
+                math.dist(mirrored[0], candidate[1]),
+                math.dist(mirrored[1], candidate[0]),
+            )
+            return min(direct, reversed_error)
+
+        for candidate_id, candidate_segment in line_coord.items():
+            if candidate_id == raw_member_id or len(candidate_segment) != 2:
+                continue
+            candidate = [
+                (float(point[0]), float(point[1]))
+                for point in candidate_segment
+            ]
+            # The two sides in real CAD drawings are often tens of drawing
+            # units apart after reflection because endpoints are not drafted
+            # perfectly symmetrically. Both endpoints must match, so 100 is
+            # still narrow enough to avoid pairing unrelated members.
+            if endpoint_error(candidate) <= 100.0:
+                return True
+        return False
+
     used_nids = set()
     node_records = {}
     member_specs = {}
     member_order = []
     tier1_nodes_map = {}
+    tier1_symmetry_map = {}
 
     def get_safe_nid(base_id):
         for suffix in range(10, 100, 10):
@@ -699,7 +819,408 @@ def single_view0201(
             for index in range(3)
         )
 
-    def _add_rotated_side_member(member_id, node_base, node1_id, node2_id, variant):
+    def _symmetry_point(point, delta):
+        """Return the point represented by one SmartTower symmetry suffix."""
+        x_value, y_value, z_value = point
+        return (
+            -x_value if delta in (1, 3) else x_value,
+            -y_value if delta in (2, 3) else y_value,
+            z_value,
+        )
+
+    def _symmetry_node_id(node_id, delta):
+        """Apply SmartTower's two-digit node-suffix expansion rule."""
+        node_id = str(node_id)
+        suffix = node_id[-2:]
+        if not suffix.isdigit():
+            return None
+        return f"{node_id[:-2]}{int(suffix) + delta:02d}"
+
+    def _find_existing_spatial_node(
+        point,
+        point_tolerance=NODE_REUSE_TOLERANCE,
+        source_node_id=None,
+        side_reuse_only=False,
+    ):
+        """
+        Find an exported node, including an implicit symmetry copy, at point.
+
+        Side-face rods must connect to the same topology IDs as the front-face
+        family at a tower corner.  Merely creating another node at the same
+        coordinates leaves two disconnected graph vertices.
+        """
+        matches = []
+        for source_id, record in node_records.items():
+            if not record.get("_export"):
+                continue
+            if source_node_id is not None and str(source_id) != str(source_node_id):
+                continue
+
+            linked_variants = {
+                str(member_specs[connection_key].get("variant", ""))
+                for connection_key in record.get("_member_links", [])
+            }
+            is_tier1 = "tier1-main" in linked_variants
+            is_side_node = (
+                record.get("_view_face") == "side"
+                or any(variant.endswith("-side") for variant in linked_variants)
+            )
+            if side_reuse_only and not (is_tier1 or is_side_node):
+                continue
+
+            source_point = _resolve_node_xyz(source_id)
+            if source_point is None:
+                continue
+            symmetry_type = int(record.get("symmetry_type", 0) or 0)
+            deltas = [0]
+            if symmetry_type in (1, 2, 3):
+                deltas.append(symmetry_type)
+            elif symmetry_type == 4:
+                deltas.extend((1, 2, 3))
+            for delta in deltas:
+                candidate_point = (
+                    source_point if delta == 0
+                    else _symmetry_point(source_point, delta)
+                )
+                distance = math.dist(point, candidate_point)
+                if distance > point_tolerance:
+                    continue
+                candidate_id = (
+                    str(source_id) if delta == 0
+                    else _symmetry_node_id(source_id, delta)
+                )
+                if candidate_id is not None:
+                    matches.append(
+                        (
+                            distance,
+                            not is_tier1,
+                            delta != 0,
+                            candidate_id,
+                            candidate_point,
+                        )
+                    )
+        if not matches:
+            return None
+        _, _, _, candidate_id, candidate_point = min(
+            matches, key=lambda item: item[:4]
+        )
+        if candidate_id not in node_records:
+            add_node(
+                candidate_id,
+                11,
+                0,
+                candidate_point[0],
+                candidate_point[1],
+                candidate_point[2],
+                None,
+                export=False,
+                view_face="side" if side_reuse_only or source_node_id else "front",
+            )
+        return candidate_id
+
+    def _reuse_or_add_tier1_side_node(node_base, point, source_node_id):
+        """Snap a side endpoint to a real tier-1 instance and reference it."""
+        candidates = []
+        for host_key, endpoint_ids in tier1_nodes_map.items():
+            if str(host_key) not in tier1_symmetry_map:
+                continue
+            point1 = _resolve_node_xyz(endpoint_ids[0])
+            point2 = _resolve_node_xyz(endpoint_ids[1])
+            if point1 is None or point2 is None:
+                continue
+
+            symmetry_type = tier1_symmetry_map.get(str(host_key), 4)
+            deltas = [0]
+            if symmetry_type in (1, 2, 3):
+                deltas.append(symmetry_type)
+            elif symmetry_type == 4:
+                deltas.extend((1, 2, 3))
+
+            for delta in deltas:
+                host_point1 = (
+                    point1 if delta == 0 else _symmetry_point(point1, delta)
+                )
+                host_point2 = (
+                    point2 if delta == 0 else _symmetry_point(point2, delta)
+                )
+                direction = tuple(
+                    host_point2[index] - host_point1[index]
+                    for index in range(3)
+                )
+                length_squared = sum(value * value for value in direction)
+                if length_squared <= 1e-18:
+                    continue
+                raw_ratio = sum(
+                    (point[index] - host_point1[index]) * direction[index]
+                    for index in range(3)
+                ) / length_squared
+                ratio = max(0.0, min(1.0, raw_ratio))
+                host_length = math.sqrt(length_squared)
+                endpoint_margin_ratio = min(
+                    0.5,
+                    (NODE_REUSE_TOLERANCE * 0.1) / host_length,
+                )
+                if ratio <= endpoint_margin_ratio:
+                    ratio = 0.0
+                elif ratio >= 1.0 - endpoint_margin_ratio:
+                    ratio = 1.0
+                projected = tuple(
+                    host_point1[index] + ratio * direction[index]
+                    for index in range(3)
+                )
+                distance = math.dist(point, projected)
+                if distance > NODE_REUSE_TOLERANCE:
+                    continue
+
+                base_projected = tuple(
+                    point1[index] + ratio * (point2[index] - point1[index])
+                    for index in range(3)
+                )
+                candidates.append(
+                    (
+                        distance,
+                        str(host_key),
+                        delta,
+                        projected,
+                        base_projected,
+                        endpoint_ids,
+                    )
+                )
+
+        if not candidates:
+            return None
+
+        _, host_key, delta, projected, base_projected, endpoint_ids = min(
+            candidates, key=lambda item: item[:3]
+        )
+
+        ref1, ref2 = str(endpoint_ids[0]), str(endpoint_ids[1])
+        ref1_point = _resolve_node_xyz(ref1)
+        ref2_point = _resolve_node_xyz(ref2)
+
+        real_axis = max(
+            range(3),
+            key=lambda index: abs(ref2_point[index] - ref1_point[index]),
+        )
+        values = []
+        reference_values = iter((str(ref1), str(ref2)))
+        for axis_index in range(3):
+            if axis_index == real_axis:
+                values.append(round(base_projected[axis_index], 9))
+            else:
+                values.append(next(reference_values))
+
+        host_connection_key = next(
+            (
+                connection_key
+                for connection_key, spec in member_specs.items()
+                if str(spec.get("member_id")) == str(host_key)
+                and str(spec.get("variant")) == "tier1-main"
+            ),
+            None,
+        )
+        canonical_id = find_existing_tier1_front_node(
+            host_key,
+            base_projected,
+            point_tolerance=NODE_REUSE_TOLERANCE,
+        )
+        if canonical_id is None:
+            canonical_id = str(get_safe_nid(node_base))
+            add_node(
+                canonical_id,
+                12,
+                4,
+                values[0],
+                values[1],
+                values[2],
+                None,
+                export=True,
+                view_face="front",
+            )
+            node_records[canonical_id].setdefault("_tier1_host_keys", set()).add(
+                str(host_key)
+            )
+
+        # The tier-1 member is split by the canonical front node. Its member
+        # symmetry then creates the same split on the side instance, where the
+        # rotated brace reuses the corresponding suffix node.
+        if host_connection_key is not None:
+            links = node_records[canonical_id]["_member_links"]
+            if host_connection_key not in links:
+                links.append(host_connection_key)
+
+        if delta == 0:
+            return canonical_id
+        side_id = _symmetry_node_id(canonical_id, delta)
+        if side_id is None:
+            return None
+        if side_id not in node_records:
+            canonical_point = _resolve_node_xyz(canonical_id)
+            if canonical_point is None:
+                return None
+            side_point = _symmetry_point(canonical_point, delta)
+            add_node(
+                side_id,
+                11,
+                0,
+                side_point[0],
+                side_point[1],
+                side_point[2],
+                None,
+                export=False,
+                view_face="side",
+            )
+        return str(side_id)
+
+    def _reuse_or_add_side_host_node(node_base, point, host_kind, host_key):
+        """Create a type-12 endpoint on the already-built side host."""
+        if host_kind == "tier2":
+            side_info = tier2_side_nodes_map.get(str(host_key))
+        elif host_kind == "tier3":
+            side_info = tier3_side_nodes_map.get(str(host_key))
+        else:
+            return None
+        if not side_info:
+            return None
+        host_candidates = []
+        for ref1, ref2 in side_info.get(
+            "segments", (side_info["endpoints"],)
+        ):
+            point1 = _resolve_node_xyz(ref1)
+            point2 = _resolve_node_xyz(ref2)
+            if point1 is None or point2 is None:
+                continue
+
+            direction = tuple(point2[index] - point1[index] for index in range(3))
+            length_squared = sum(value * value for value in direction)
+            if length_squared <= 1e-18:
+                continue
+            raw_ratio = sum(
+                (point[index] - point1[index]) * direction[index]
+                for index in range(3)
+            ) / length_squared
+            ratio = max(0.0, min(1.0, raw_ratio))
+            host_length = math.sqrt(length_squared)
+            endpoint_margin_ratio = min(
+                0.5,
+                (NODE_REUSE_TOLERANCE * 0.1) / host_length,
+            )
+            if ratio <= endpoint_margin_ratio:
+                ratio = 0.0
+            elif ratio >= 1.0 - endpoint_margin_ratio:
+                ratio = 1.0
+            projected = tuple(
+                point1[index] + ratio * direction[index]
+                for index in range(3)
+            )
+            distance = math.dist(point, projected)
+            if distance <= NODE_REUSE_TOLERANCE:
+                host_candidates.append(
+                    (distance, str(ref1), str(ref2), point1, point2, projected)
+                )
+        if not host_candidates:
+            return None
+        _, ref1, ref2, point1, point2, projected = min(
+            host_candidates, key=lambda item: item[:3]
+        )
+
+        existing_id = _find_existing_spatial_node(
+            projected,
+            point_tolerance=1e-7,
+            side_reuse_only=True,
+        )
+        if existing_id is not None:
+            return str(existing_id)
+
+        real_axis = max(
+            range(3),
+            key=lambda index: abs(point2[index] - point1[index]),
+        )
+        values = []
+        reference_values = iter((str(ref1), str(ref2)))
+        for axis_index in range(3):
+            if axis_index == real_axis:
+                values.append(round(projected[axis_index], 9))
+            else:
+                values.append(next(reference_values))
+
+        node_id = get_safe_nid(node_base)
+        add_node(
+            node_id,
+            12,
+            4,
+            values[0],
+            values[1],
+            values[2],
+            None,
+            export=True,
+            view_face="side",
+        )
+        return str(node_id)
+
+    def _reuse_or_add_side_node(
+        node_base,
+        point,
+        source_node_id,
+        host_kind=None,
+        host_key=None,
+    ):
+        """Reuse the endpoint's own symmetry or a side/tier-1 node only."""
+        tier1_node_id = _reuse_or_add_tier1_side_node(
+            node_base, point, source_node_id
+        )
+        if tier1_node_id is not None:
+            return tier1_node_id
+
+        side_host_node_id = _reuse_or_add_side_host_node(
+            node_base, point, host_kind, host_key
+        )
+        if side_host_node_id is not None:
+            return side_host_node_id
+
+        # At a tower corner, the rotated endpoint is an implicit symmetry copy
+        # of the front endpoint.  That identity is stronger than a global
+        # nearest-node match and preserves the type-12 host reference.
+        existing_id = _find_existing_spatial_node(
+            point,
+            source_node_id=source_node_id,
+        )
+        if existing_id is None:
+            # Never let a side endpoint attach to an unrelated front
+            # horizontal/X-brace merely because it is inside the 150 mm EPS.
+            existing_id = _find_existing_spatial_node(
+                point,
+                side_reuse_only=True,
+            )
+        if existing_id is not None:
+            # Reuse the canonical coordinate verbatim.  Replacing an implicit
+            # main-rod symmetry node with the noisy rotated endpoint would
+            # move that node off the straight tier-1 line.
+            return str(existing_id)
+
+        node_id = get_safe_nid(node_base)
+        add_node(
+            node_id,
+            11,
+            4,
+            point[0],
+            point[1],
+            point[2],
+            None,
+            export=True,
+            view_face="side",
+        )
+        return str(node_id)
+
+    def _add_rotated_side_member(
+        member_id,
+        node_base,
+        node1_id,
+        node2_id,
+        variant,
+        member_symmetry_type=4,
+        endpoint_infos=None,
+    ):
         """Create one true side-face member by rotating both front endpoints."""
         point1 = _resolve_node_xyz(node1_id)
         point2 = _resolve_node_xyz(node2_id)
@@ -707,14 +1228,59 @@ def single_view0201(
             print(f"[跳过侧面] 杆件 {member_id} 的正面端点无法解析")
             return None
 
-        side_node1 = get_safe_nid(node_base)
-        side_node2 = get_safe_nid(node_base)
         x1, y1, z1 = point1
         x2, y2, z2 = point2
-        add_node(side_node1, 11, 4, y1, -x1, z1, None, export=True, view_face="side")
-        add_node(side_node2, 11, 4, y2, -x2, z2, None, export=True, view_face="side")
-        add_member(member_id, 4, side_node1, side_node2, variant=variant)
-        return str(side_node1), str(side_node2)
+        endpoint_infos = endpoint_infos or ({}, {})
+        side_node1 = _reuse_or_add_side_node(
+            node_base,
+            (y1, -x1, z1),
+            node1_id,
+            endpoint_infos[0].get("host_kind"),
+            endpoint_infos[0].get("host_key"),
+        )
+        side_node2 = _reuse_or_add_side_node(
+            node_base,
+            (y2, -x2, z2),
+            node2_id,
+            endpoint_infos[1].get("host_kind"),
+            endpoint_infos[1].get("host_key"),
+        )
+        use_explicit_mirror = member_symmetry_type == 1
+        add_member(
+            member_id,
+            0 if use_explicit_mirror else member_symmetry_type,
+            side_node1,
+            side_node2,
+            variant=variant,
+        )
+        segments = [(str(side_node1), str(side_node2))]
+        if use_explicit_mirror:
+            mirrored_node1 = _reuse_or_add_side_node(
+                node_base,
+                _symmetry_point((y1, -x1, z1), 1),
+                node1_id,
+                endpoint_infos[0].get("host_kind"),
+                endpoint_infos[0].get("host_key"),
+            )
+            mirrored_node2 = _reuse_or_add_side_node(
+                node_base,
+                _symmetry_point((y2, -x2, z2), 1),
+                node2_id,
+                endpoint_infos[1].get("host_kind"),
+                endpoint_infos[1].get("host_key"),
+            )
+            add_member(
+                member_id,
+                0,
+                mirrored_node1,
+                mirrored_node2,
+                variant=variant.replace("-side", "-mirror-side"),
+            )
+            segments.append((str(mirrored_node1), str(mirrored_node2)))
+        return {
+            "endpoints": segments[0],
+            "segments": tuple(segments),
+        }
 
     tier2_nodes_map = {}
     tier2_side_nodes_map = {}
@@ -737,7 +1303,122 @@ def single_view0201(
             add_node(nid, 11, 4, x3d, tier1_y3d, z3d, pt, export=True)
             node_ids.append(str(nid))
         tier1_nodes_map[member_k] = (node_ids[0], node_ids[1])
-        add_member(member_k, 4, node_ids[0], node_ids[1], variant="tier1-main")
+        tier1_symmetry_type = 2 if has_explicit_mirror_pair(k) else 4
+        tier1_symmetry_map[member_k] = tier1_symmetry_type
+        add_member(
+            member_k,
+            tier1_symmetry_type,
+            node_ids[0],
+            node_ids[1],
+            variant="tier1-main",
+        )
+
+    # A symmetric single-view sheet describes one horizontal tower segment,
+    # but CAD endpoints on its left/right main legs are commonly several
+    # drawing units apart in Y.  If those raw values become Z unchanged, each
+    # splice aligns only one side and the error accumulates up the tower.
+    # Level the two physical main-leg endpoints before dependent nodes are
+    # resolved.  Asymmetric/high-low-slope sheets expose only one real leg and
+    # are intentionally left untouched.
+    real_main_pairs = [
+        tier1_nodes_map[member_instance_id(member_id)]
+        for member_id in real_lines01
+        if member_instance_id(member_id) in tier1_nodes_map
+    ]
+    if len(real_main_pairs) >= 2:
+        for endpoint_index in (0, 1):
+            records = [
+                node_records[str(node_pair[endpoint_index])]
+                for node_pair in real_main_pairs
+            ]
+            level_z = sum(float(record["Z"]) for record in records) / len(records)
+            for record in records:
+                record["Z"] = round(level_z, 6)
+                xyz = record.get("_xyz")
+                if xyz is not None:
+                    record["_xyz"] = (xyz[0], xyz[1], round(level_z, 6))
+
+    def find_existing_front_node_at_point(expected_point, point_tolerance=1e-7):
+        """Reuse a front node only when its resolved 3-D point is identical."""
+
+        candidates = []
+        for source_id, record in node_records.items():
+            if record.get("_view_face") != "front" or not record.get("_export"):
+                continue
+            source_point = _resolve_node_xyz(source_id)
+            if source_point is None:
+                continue
+            symmetry_type = int(record.get("symmetry_type", 0) or 0)
+            deltas = [0]
+            if symmetry_type in (1, 2, 3):
+                deltas.append(symmetry_type)
+            elif symmetry_type == 4:
+                deltas.extend((1, 2, 3))
+            for delta in deltas:
+                candidate_point = (
+                    source_point if delta == 0
+                    else _symmetry_point(source_point, delta)
+                )
+                distance = math.dist(expected_point, candidate_point)
+                if distance > point_tolerance:
+                    continue
+                candidate_id = (
+                    str(source_id) if delta == 0
+                    else _symmetry_node_id(source_id, delta)
+                )
+                if candidate_id is not None:
+                    candidates.append((distance, delta != 0, candidate_id))
+
+        if not candidates:
+            return None
+
+        _, is_implicit, node_id = min(
+            candidates, key=lambda item: (item[0], item[1], item[2])
+        )
+        if is_implicit and node_id not in node_records:
+            add_node(
+                node_id,
+                11,
+                0,
+                expected_point[0],
+                expected_point[1],
+                expected_point[2],
+                None,
+                export=False,
+                view_face="front",
+            )
+        return str(node_id)
+
+    def find_existing_tier1_front_node(
+        host_key,
+        expected_point,
+        point_tolerance=NODE_REUSE_TOLERANCE,
+    ):
+        """Reuse the nearest front node attached to the same tier-1 host."""
+        host_key = str(host_key)
+        candidates = []
+        for node_id, record in node_records.items():
+            if not record.get("_export") or record.get("_view_face") != "front":
+                continue
+            linked_to_host = any(
+                str(member_specs[connection_key].get("member_id")) == host_key
+                and str(member_specs[connection_key].get("variant")) == "tier1-main"
+                for connection_key in record.get("_member_links", [])
+            )
+            tagged_hosts = {
+                str(value) for value in record.get("_tier1_host_keys", set())
+            }
+            if not linked_to_host and host_key not in tagged_hosts:
+                continue
+            candidate_point = _resolve_node_xyz(node_id)
+            if candidate_point is None:
+                continue
+            distance = math.dist(expected_point, candidate_point)
+            if distance <= point_tolerance:
+                candidates.append((distance, str(node_id)))
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: (item[0], item[1]))[1]
 
     for virtual_id, real_id in virtual_support_aliases.items():
         real_nodes = tier1_nodes_map.get(member_instance_id(real_id))
@@ -816,22 +1497,106 @@ def single_view0201(
         )
 
     unclassified = {k: v for k, v in line_coord.items() if k not in lines01}
-    tolerance = 35.0
+    tolerance = EPS
 
-    def find_host(pt, host_dict):
-        best_d = float("inf")
-        best_k = None
+    def find_host(pt, host_dict, host_depth=0):
+        """Select a 2-D host and retain the original projection ratio."""
+        best = None
         for host_key, seg in host_dict.items():
+            if not seg or len(seg) < 2:
+                continue
             d = dist_pt_seg(pt, seg[0], seg[1])
-            if d < best_d:
-                best_d = d
-                best_k = host_key
-        return best_k if best_d < tolerance else None
+            if d > tolerance:
+                continue
+            dx = float(seg[1][0]) - float(seg[0][0])
+            dy = float(seg[1][1]) - float(seg[0][1])
+            length_squared = dx * dx + dy * dy
+            if length_squared <= 1e-12:
+                continue
+            raw_ratio = (
+                (float(pt[0]) - float(seg[0][0])) * dx
+                + (float(pt[1]) - float(seg[0][1])) * dy
+            ) / length_squared
+            ratio = max(0.0, min(1.0, raw_ratio))
+            length = math.sqrt(length_squared)
+            endpoint_margin = max(1.0, tolerance * 0.1)
+            margin_ratio = min(0.5, endpoint_margin / length)
+            is_interior = margin_ratio < raw_ratio < 1.0 - margin_ratio
+            candidate = (
+                d,
+                0 if is_interior else 1,
+                int(host_depth),
+                str(host_key),
+                {
+                    "host": member_instance_id(host_key),
+                    "ratio": ratio,
+                    "distance": d,
+                    "interior": is_interior,
+                    "depth": int(host_depth),
+                },
+            )
+            if best is None or candidate[:4] < best[:4]:
+                best = candidate
+        return best[4] if best is not None else None
+
+    def _host_reference_node_values(
+        host_info,
+        host_nodes_map,
+        target_point,
+    ):
+        """Build a type-12 point using its original 2-D host ratio."""
+        host_key = str(host_info["host"])
+        if host_key in host_nodes_map:
+            ref1, ref2 = host_nodes_map[host_key]
+        else:
+            real_host_id = node_id_base(host_key)
+            ref1, ref2 = f"{real_host_id}10", f"{real_host_id}20"
+
+        point1 = _resolve_node_xyz(ref1)
+        point2 = _resolve_node_xyz(ref2)
+        if point1 is None or point2 is None:
+            raise ValueError(f"宿主杆件 {host_key} 的引用端点无法解析")
+
+        source_ratio = max(0.0, min(1.0, float(host_info["ratio"])))
+        candidates = (source_ratio, 1.0 - source_ratio)
+
+        def candidate_point(ratio):
+            return tuple(
+                point1[index] + ratio * (point2[index] - point1[index])
+                for index in range(3)
+            )
+
+        # CAD segment direction and exported node order are independent.
+        # Select r or 1-r by the reconstructed X/Z target, then keep that
+        # ratio unchanged through later sheet transformations.
+        ratio = min(
+            candidates,
+            key=lambda value: (
+                (candidate_point(value)[0] - target_point[0]) ** 2
+                + (candidate_point(value)[2] - target_point[2]) ** 2
+            ),
+        )
+        host_point = candidate_point(ratio)
+        deltas = [abs(point2[index] - point1[index]) for index in range(3)]
+        real_axis = max(range(3), key=lambda index: deltas[index])
+        if deltas[real_axis] <= 1e-9:
+            raise ValueError(f"宿主杆件 {host_key} 没有可用于引用的坐标跨度")
+
+        values = [str(ref1), str(ref2)]
+        result = []
+        reference_index = 0
+        for axis_index in range(3):
+            if axis_index == real_axis:
+                result.append(round(host_point[axis_index], 9))
+            else:
+                result.append(values[reference_index])
+                reference_index += 1
+        return tuple(result), host_point
 
     tier2_members = {}
     for k, seg in list(unclassified.items()):
-        h1 = find_host(seg[0], lines01)
-        h2 = find_host(seg[1], lines01)
+        h1 = find_host(seg[0], lines01, host_depth=0)
+        h2 = find_host(seg[1], lines01, host_depth=0)
 
         if h1 and h2:
             tier2_members[k] = seg
@@ -842,38 +1607,135 @@ def single_view0201(
             node_ids = []
             endpoint_hosts = {}
             for idx, pt in enumerate(seg):
-                nid = get_safe_nid(node_id_base(k))
-                _, _, z3d = projector(pt[0], pt[1])
-                host_key = member_instance_id(h1 if idx == 0 else h2)
-                if host_key in tier1_nodes_map:
-                    ref_x, ref_y = tier1_nodes_map[host_key]
+                host_info = h1 if idx == 0 else h2
+                host_key = str(host_info["host"])
+                x3d, y3d, z3d = projector(pt[0], pt[1])
+                node_values, host_point = _host_reference_node_values(
+                    host_info,
+                    tier1_nodes_map,
+                    (x3d, y3d, z3d),
+                )
+                existing_node_id = find_existing_tier1_front_node(
+                    host_key,
+                    host_point,
+                )
+                if existing_node_id is not None:
+                    node_id = existing_node_id
                 else:
-                    real_host_id = node_id_base(host_key)
-                    ref_x, ref_y = f"{real_host_id}10", f"{real_host_id}20"
-                add_node(nid, 12, 4, ref_x, ref_y, z3d, pt, export=True)
-                node_ids.append(str(nid))
-                endpoint_hosts[str(nid)] = host_key
-
-            tier2_nodes_map[member_k] = (node_ids[0], node_ids[1])
+                    nid = get_safe_nid(node_id_base(k))
+                    node_x, node_y, node_z = node_values
+                    add_node(nid, 12, 4, node_x, node_y, node_z, pt, export=True)
+                    node_id = str(nid)
+                node_records[str(node_id)].setdefault(
+                    "_tier1_host_keys", set()
+                ).add(host_key)
+                node_ids.append(str(node_id))
+                endpoint_hosts[str(node_id)] = host_key
 
             is_horiz = abs(seg[0][1] - seg[1][1]) < 25.0
             side_nodes = None
             side_by_source = {}
             if is_horiz:
+                # Use both real front endpoints.  The left/right main rods can
+                # differ slightly, so mirroring one endpoint onto the other
+                # would recreate the side-node gap this topology is avoiding.
+                resolved_endpoints = [
+                    _resolve_node_xyz(node_ids[0]),
+                    _resolve_node_xyz(node_ids[1]),
+                ]
+                anchor_index = min(
+                    range(2),
+                    key=lambda index: (
+                        resolved_endpoints[index][0]
+                        if resolved_endpoints[index] is not None
+                        else float("inf")
+                    ),
+                )
+                anchor_id = str(node_ids[anchor_index])
+                opposite_id = str(node_ids[1 - anchor_index])
+                tier2_nodes_map[member_k] = (anchor_id, opposite_id)
                 if not front_only:
-                    virtual_y = f"{node_ids[0][:-1]}1"
-                    virtual_x = f"{node_ids[0][:-1]}2"
-                    add_member(member_k, 2, node_ids[0], virtual_y, variant="tier2-horizontal-y", source2=node_ids[0])
-                    add_member(member_k, 1, node_ids[0], virtual_x, variant="tier2-horizontal-x", source2=node_ids[0])
+                    add_member(
+                        member_k,
+                        2,
+                        anchor_id,
+                        opposite_id,
+                        variant="tier2-horizontal-front",
+                    )
+                    side_segments = []
+                    for side_index, source_id in enumerate(
+                        (anchor_id, opposite_id), start=1
+                    ):
+                        source_point = _resolve_node_xyz(source_id)
+                        virtual_id = _symmetry_node_id(source_id, 2)
+                        if source_point is None or virtual_id is None:
+                            continue
+                        virtual_point = _symmetry_point(source_point, 2)
+                        add_node(
+                            virtual_id,
+                            11,
+                            0,
+                            virtual_point[0],
+                            virtual_point[1],
+                            virtual_point[2],
+                            None,
+                            export=False,
+                            view_face="side",
+                        )
+                        add_member(
+                            member_k,
+                            0,
+                            source_id,
+                            virtual_id,
+                            variant=f"tier2-horizontal-{side_index}-side",
+                        )
+                        side_segments.append((source_id, virtual_id))
+                    tier2_side_nodes_map[member_k] = {
+                        "endpoints": side_segments[0],
+                        "segments": tuple(side_segments),
+                        "by_source": {anchor_id: anchor_id},
+                        "endpoint_hosts": endpoint_hosts,
+                    }
+                else:
+                    add_member(
+                        member_k,
+                        2,
+                        anchor_id,
+                        opposite_id,
+                        variant="tier2-horizontal-front",
+                    )
             else:
-                add_member(member_k, 4, node_ids[0], node_ids[1], variant="tier2-main")
+                tier2_nodes_map[member_k] = (node_ids[0], node_ids[1])
+                paired = has_explicit_mirror_pair(k)
+                add_member(
+                    member_k,
+                    2 if paired else 4,
+                    node_ids[0],
+                    node_ids[1],
+                    variant="tier2-main",
+                )
                 if not front_only:
                     side_nodes = _add_rotated_side_member(
-                        member_k, node_id_base(k), node_ids[0], node_ids[1], "tier2-side"
+                        member_k,
+                        node_id_base(k),
+                        node_ids[0],
+                        node_ids[1],
+                        "tier2-side",
+                        member_symmetry_type=1 if paired else 4,
+                        endpoint_infos=(
+                            {
+                                "host_kind": "tier1",
+                                "host_key": endpoint_hosts.get(str(node_ids[0])),
+                            },
+                            {
+                                "host_kind": "tier1",
+                                "host_key": endpoint_hosts.get(str(node_ids[1])),
+                            },
+                        ),
                     )
                     if side_nodes:
                         tier2_side_nodes_map[member_k] = {
-                            "endpoints": side_nodes,
+                            **side_nodes,
                             "by_source": {},
                             "endpoint_hosts": endpoint_hosts,
                         }
@@ -925,21 +1787,6 @@ def single_view0201(
 
         return _replace_node_suffix(node_id, "2"), node_id
 
-    def _tier3_host_node_values(host_key, host_nodes_map, host_members, x3d, z3d):
-        """Choose a resolvable type-12 representation for the host direction."""
-        if host_key in host_nodes_map:
-            ref1, ref2 = host_nodes_map[host_key]
-        else:
-            real_host_id = node_id_base(host_key)
-            ref1, ref2 = f"{real_host_id}10", f"{real_host_id}20"
-
-        host_seg = host_members.get(host_key)
-        if host_seg and abs(host_seg[0][1] - host_seg[1][1]) < 25.0:
-            # A horizontal host has no Z span.  Keep X real so the renderer
-            # can interpolate from the two referenced endpoints.
-            return x3d, ref1, ref2
-        return ref1, ref2, z3d
-
     # Tier-3 braces may depend on another tier-3 brace.  Keep propagating
     # recognized hosts until no remaining member can be resolved.
     tier3_members = {}
@@ -982,16 +1829,27 @@ def single_view0201(
     shared_node_map = {}
 
     def resolve_host(pt):
-        host_key = find_host(pt, lines01)
-        if host_key:
-            return "tier1", member_instance_id(host_key)
-        host_key = find_host(pt, tier2_members)
-        if host_key:
-            return "tier2", member_instance_id(host_key)
-        host_key = find_host(pt, tier3_members)
-        if host_key:
-            return "tier3", member_instance_id(host_key)
-        return None, None
+        candidates = []
+        for host_kind, host_members, host_depth in (
+            ("tier1", lines01, 0),
+            ("tier2", tier2_members, 1),
+            ("tier3", tier3_members, 2),
+        ):
+            host_info = find_host(pt, host_members, host_depth=host_depth)
+            if host_info is None:
+                continue
+            candidates.append((
+                int(host_info["depth"]),
+                float(host_info["distance"]),
+                0 if host_info["interior"] else 1,
+                str(host_info["host"]),
+                host_kind,
+                host_info,
+            ))
+        if not candidates:
+            return None, None
+        selected = min(candidates, key=lambda item: item[:4])
+        return selected[4], selected[5]
 
     def shared_key_for(member_id, endpoint_index):
         cluster_key = shared_endpoint_keys.get((member_id, endpoint_index))
@@ -1019,9 +1877,9 @@ def single_view0201(
                 for endpoint_index, _ in enumerate(seg)
             ]
             endpoint_ready = []
-            for (_, host_key), shared_key in zip(endpoint_hosts, endpoint_shared_keys):
+            for (_, host_info), shared_key in zip(endpoint_hosts, endpoint_shared_keys):
                 endpoint_ready.append(
-                    bool(host_key)
+                    bool(host_info)
                     or shared_key in shared_node_map
                     or shared_key is not None
                 )
@@ -1029,7 +1887,7 @@ def single_view0201(
             if not all(endpoint_ready):
                 continue
 
-            has_host = any(host_key for _, host_key in endpoint_hosts)
+            has_host = any(host_info for _, host_info in endpoint_hosts)
             has_existing_shared = any(
                 shared_key in shared_node_map
                 for shared_key in endpoint_shared_keys
@@ -1044,33 +1902,63 @@ def single_view0201(
             endpoint_infos = []
             print(f"\n=== [处理三类杆件] {clean_k} ===")
 
-            for endpoint_index, (pt, (host_kind, host_key)) in enumerate(zip(seg, endpoint_hosts)):
+            for endpoint_index, (pt, (host_kind, host_info)) in enumerate(zip(seg, endpoint_hosts)):
                 x3d, _, z3d = projector(pt[0], pt[1])
                 shared_key = endpoint_shared_keys[endpoint_index]
-                if host_key:
-                    nid = get_safe_nid(node_id_base(k))
+                if host_info:
+                    host_key = str(host_info["host"])
                     if host_kind == "tier1":
                         host_nodes_map = tier1_nodes_map
-                        host_members = lines01
                     elif host_kind == "tier2":
                         host_nodes_map = tier2_nodes_map
-                        host_members = tier2_members
                     else:
                         host_nodes_map = tier3_nodes_map
-                        host_members = tier3_members
-                    node_x, node_y, node_z = _tier3_host_node_values(
-                        host_key, host_nodes_map, host_members, x3d, z3d
+                    front_y3d = _front_face_y_at_z(z3d)
+                    node_values, host_point = _host_reference_node_values(
+                        host_info,
+                        host_nodes_map,
+                        (x3d, front_y3d, z3d),
                     )
-                    add_node(nid, 12, 4, node_x, node_y, node_z, pt, export=True)
-                    node_id = str(nid)
+                    if host_kind == "tier1":
+                        existing_node_id = find_existing_tier1_front_node(
+                            host_key,
+                            host_point,
+                        )
+                    else:
+                        existing_node_id = find_existing_front_node_at_point(
+                            host_point
+                        )
+                    if existing_node_id is not None:
+                        node_id = existing_node_id
+                    else:
+                        nid = get_safe_nid(node_id_base(k))
+                        node_x, node_y, node_z = node_values
+                        add_node(nid, 12, 4, node_x, node_y, node_z, pt, export=True)
+                        node_id = str(nid)
+                    if host_kind == "tier1":
+                        node_records[str(node_id)].setdefault(
+                            "_tier1_host_keys", set()
+                        ).add(host_key)
                 else:
-                    node_id = get_or_create_shared_node(shared_key, k, pt)
+                    shared_node_id = shared_node_map.get(shared_key)
+                    if shared_node_id is not None:
+                        node_id = shared_node_id
+                    else:
+                        node_id = get_or_create_shared_node(shared_key, k, pt)
                     host_kind = "shared"
-                    host_key = None
                 endpoint_infos.append({
                     "node_id": str(node_id),
                     "host_kind": host_kind,
-                    "host_key": host_key,
+                    "host_key": (
+                        str(host_info["host"])
+                        if host_info is not None
+                        else None
+                    ),
+                    "host_ratio": (
+                        float(host_info["ratio"])
+                        if host_info is not None
+                        else None
+                    ),
                     "z": z3d,
                     "front_xy": pt,
                 })
@@ -1078,14 +1966,27 @@ def single_view0201(
 
             tier3_members[k] = seg
             tier3_nodes_map[member_k] = (node_ids[0], node_ids[1])
-            add_member(member_k, 4, node_ids[0], node_ids[1], variant="tier3-main")
+            paired = has_explicit_mirror_pair(k)
+            add_member(
+                member_k,
+                2 if paired else 4,
+                node_ids[0],
+                node_ids[1],
+                variant="tier3-main",
+            )
             if not front_only:
                 side_nodes = _add_rotated_side_member(
-                    member_k, node_id_base(k), node_ids[0], node_ids[1], "tier3-side"
+                    member_k,
+                    node_id_base(k),
+                    node_ids[0],
+                    node_ids[1],
+                    "tier3-side",
+                    member_symmetry_type=1 if paired else 4,
+                    endpoint_infos=endpoint_infos,
                 )
                 if side_nodes:
                     tier3_side_nodes_map[member_k] = {
-                        "endpoints": side_nodes,
+                        **side_nodes,
                         "by_source": {},
                         "endpoint_hosts": {
                             endpoint_infos[0]["node_id"]: endpoint_infos[0]["host_key"],
@@ -1100,11 +2001,177 @@ def single_view0201(
                 print(f"[跳过] 杆件 {k} 无有效宿主")
             break
 
+    def _connect_endpoints_on_host_members(contact_tolerance=1e-7):
+        """Connect endpoint contacts and exact interior crossings topologically."""
+        def member_face(connection_key):
+            variant = str(member_specs[connection_key].get("variant", ""))
+            return "side" if variant.endswith("-side") else "front"
+
+        used_node_ids = {
+            str(node_id)
+            for node_id, record in node_records.items()
+            if record.get("_member_links")
+        }
+        resolved_points = {
+            node_id: _resolve_node_xyz(node_id)
+            for node_id in used_node_ids
+        }
+        node_faces = {
+            node_id: {
+                member_face(connection_key)
+                for connection_key in node_records[node_id]["_member_links"]
+            }
+            for node_id in used_node_ids
+        }
+
+        for connection_key in member_order:
+            spec = member_specs[connection_key]
+            host_face = member_face(connection_key)
+            preferred = [str(node_id) for node_id in spec["preferred_nodes"]]
+            if len(preferred) != 2:
+                continue
+            start = _resolve_node_xyz(preferred[0])
+            end = _resolve_node_xyz(preferred[1])
+            if start is None or end is None:
+                continue
+
+            direction = tuple(end[index] - start[index] for index in range(3))
+            length_squared = sum(value * value for value in direction)
+            if length_squared <= 1e-18:
+                continue
+
+            for node_id, point in resolved_points.items():
+                if node_id in preferred or point is None:
+                    continue
+                # Front and rotated-side nodes can coincide before sheet
+                # splicing but receive different Z corrections afterwards.
+                # Treating such a cross-face coincidence as an interior joint
+                # bends the side rod after transformation.
+                if host_face not in node_faces.get(node_id, set()):
+                    continue
+                parameter = sum(
+                    (point[index] - start[index]) * direction[index]
+                    for index in range(3)
+                ) / length_squared
+                if parameter <= 1e-7 or parameter >= 1.0 - 1e-7:
+                    continue
+                projected = tuple(
+                    start[index] + parameter * direction[index]
+                    for index in range(3)
+                )
+                if math.dist(point, projected) > contact_tolerance:
+                    continue
+                links = node_records[node_id]["_member_links"]
+                if connection_key not in links:
+                    links.append(connection_key)
+
+        def closest_points_on_segments(start1, end1, start2, end2):
+            direction1 = tuple(end1[i] - start1[i] for i in range(3))
+            direction2 = tuple(end2[i] - start2[i] for i in range(3))
+            offset = tuple(start1[i] - start2[i] for i in range(3))
+
+            def dot(first, second):
+                return sum(first[i] * second[i] for i in range(3))
+
+            a_value = dot(direction1, direction1)
+            e_value = dot(direction2, direction2)
+            if a_value <= 1e-18 or e_value <= 1e-18:
+                return None
+            b_value = dot(direction1, direction2)
+            c_value = dot(direction1, offset)
+            f_value = dot(direction2, offset)
+            denominator = a_value * e_value - b_value * b_value
+            if abs(denominator) <= 1e-18:
+                return None
+            parameter1 = (b_value * f_value - c_value * e_value) / denominator
+            parameter2 = (a_value * f_value - b_value * c_value) / denominator
+            if not (1e-7 < parameter1 < 1.0 - 1e-7):
+                return None
+            if not (1e-7 < parameter2 < 1.0 - 1e-7):
+                return None
+            point1 = tuple(
+                start1[i] + parameter1 * direction1[i]
+                for i in range(3)
+            )
+            point2 = tuple(
+                start2[i] + parameter2 * direction2[i]
+                for i in range(3)
+            )
+            if math.dist(point1, point2) > contact_tolerance:
+                return None
+            return tuple((point1[i] + point2[i]) / 2.0 for i in range(3))
+
+        base_segments = []
+        for connection_key in member_order:
+            preferred = [
+                str(node_id)
+                for node_id in member_specs[connection_key]["preferred_nodes"]
+            ]
+            if len(preferred) != 2:
+                continue
+            start = _resolve_node_xyz(preferred[0])
+            end = _resolve_node_xyz(preferred[1])
+            if start is not None and end is not None:
+                base_segments.append((connection_key, preferred, start, end))
+
+        for first_index, first in enumerate(base_segments):
+            first_key, first_ids, first_start, first_end = first
+            for second in base_segments[first_index + 1:]:
+                second_key, second_ids, second_start, second_end = second
+                if member_face(first_key) != member_face(second_key):
+                    continue
+                if set(first_ids) & set(second_ids):
+                    continue
+                intersection = closest_points_on_segments(
+                    first_start, first_end, second_start, second_end
+                )
+                if intersection is None:
+                    continue
+
+                intersection_id = _find_existing_spatial_node(
+                    intersection, point_tolerance=contact_tolerance
+                )
+                if intersection_id is None:
+                    first_member_id = member_specs[first_key]["member_id"]
+                    intersection_id = str(get_safe_nid(node_id_base(first_member_id)))
+                    add_node(
+                        intersection_id,
+                        11,
+                        4,
+                        intersection[0],
+                        intersection[1],
+                        intersection[2],
+                        None,
+                        export=True,
+                    )
+                elif intersection_id not in node_records:
+                    add_node(
+                        intersection_id,
+                        11,
+                        0,
+                        intersection[0],
+                        intersection[1],
+                        intersection[2],
+                        None,
+                        export=False,
+                    )
+
+                links = node_records[str(intersection_id)]["_member_links"]
+                for connection_key in (first_key, second_key):
+                    if connection_key not in links:
+                        links.append(connection_key)
+
+    _connect_endpoints_on_host_members()
+
     if debug_member_links:
         _debug_dump_member_links(node_records)
 
     ganjian = _build_members_from_node_records(
-        node_records, member_specs, member_order, debug_member_trace=debug_member_trace
+        node_records,
+        member_specs,
+        member_order,
+        resolve_node_xyz=_resolve_node_xyz,
+        debug_member_trace=debug_member_trace,
     )
     jiedian = _export_node_records(node_records, include_view_face=keep_view_face)
 

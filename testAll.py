@@ -49,6 +49,7 @@ tashen_dir = "/Users/bilibili/Desktop/threewei/Sanwei/zuobiao/TaShen/JC27302"
 
 project_path = "/Users/bilibili/Desktop/threewei/Sanwei/output_path"
 savepath_ui = "/Users/bilibili/Desktop/threewei/Sanwei/output_path/savepath_ui"
+# 杆件规格：必须用guige.txt命名
 specifications_path = "/Users/bilibili/Desktop/threewei/Sanwei/table/JC27302/guige.txt"
 
 

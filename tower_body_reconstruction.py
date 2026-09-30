@@ -23,6 +23,7 @@ import single_view_processor as sv
 import sv_class1_transform as t1
 import tower_foot_processor as tfp
 from asymmetric_tower_normalizer import normalize_asymmetric_tower_view
+from node_merge_utils import merge_coincident_nodes
 
 Point3D = Tuple[float, float, float]
 
@@ -1101,6 +1102,19 @@ def run_autodetect(root_dir: str, drawing_type: Optional[str] = None):
 
 def build_tower_body(tashen_dir, drawing_type: Optional[str] = None):
     ganjian, jiedian, pinjie = run_autodetect(tashen_dir, drawing_type=drawing_type)
+    seam_stats = merge_coincident_nodes(
+        jiedian,
+        ganjian,
+        pinjie=pinjie,
+        tolerance=0.01,
+        only_cross_drawing=True,
+    )
+    if seam_stats["merged_node_ids"]:
+        print(
+            "[拼接闭合] 合并重合节点标识 "
+            f"{seam_stats['merged_node_ids']} 个，删除重复节点记录 "
+            f"{seam_stats['removed_node_rows']} 条"
+        )
     return ganjian, jiedian, pinjie
 
 

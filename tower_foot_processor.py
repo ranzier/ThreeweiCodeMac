@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from dual_view_core import load_and_parse_data
 
@@ -23,6 +23,7 @@ CoordDict = Dict[str, List[Point2D]]
 FOOT_FILENAME = "59_front.txt"
 CONNECTION_DRAWING_PREFIX = "13"
 COORDINATE_DIGITS = 6
+FOOT_MAIN_MEMBER_IDS = {"5921"}
 
 
 @dataclass(frozen=True)
@@ -355,6 +356,8 @@ def build_half_front_foot(
     nodes: List[dict] = []
     members: List[dict] = []
     node_cache: Dict[Tuple[str, Point3D], str] = {}
+    node_points: Dict[str, Point3D] = {}
+    node_faces: Dict[str, set[str]] = {}
     existing_connections = {
         tuple(round(value, COORDINATE_DIGITS) for value in point): node_id
         for node_ids, points in (
@@ -367,7 +370,10 @@ def build_half_front_foot(
     def node_id(point: Point3D, face: str, symmetry_type: int) -> str:
         key = tuple(round(float(value), COORDINATE_DIGITS) for value in point)
         if key in existing_connections:
-            return existing_connections[key]
+            existing_id = existing_connections[key]
+            node_points.setdefault(existing_id, key)
+            node_faces.setdefault(existing_id, set()).add(face)
+            return existing_id
         cache_key = face, key
         if cache_key not in node_cache:
             new_id = f"TF{face.upper()}{len(node_cache) + 1:04d}0"
@@ -382,7 +388,10 @@ def build_half_front_foot(
                     "Z": key[2],
                 }
             )
-        return node_cache[cache_key]
+        result = node_cache[cache_key]
+        node_points[result] = key
+        node_faces.setdefault(result, set()).add(face)
+        return result
 
     def source_coordinates(point: Point2D) -> Tuple[float, float]:
         offset_x = float(point[0]) - source_a[0]
@@ -415,6 +424,26 @@ def build_half_front_foot(
     )
     if outer_main_segment is None:
         raise ValueError("塔脚图纸缺少控制外倾角的5921杆件")
+    center_host_segment = next(
+        (
+            segment
+            for raw_member_id, segment in front.items()
+            if str(raw_member_id).split("_")[0] == "5907" and len(segment) == 2
+        ),
+        None,
+    )
+    if center_host_segment is None:
+        raise ValueError("塔脚图纸缺少承接横杆节点的5907杆件")
+    diagonal_host_segment = next(
+        (
+            segment
+            for raw_member_id, segment in front.items()
+            if str(raw_member_id).split("_")[0] == "5905" and len(segment) == 2
+        ),
+        None,
+    )
+    if diagonal_host_segment is None:
+        raise ValueError("塔脚图纸缺少承接5911/5913节点的5905杆件")
 
     front_outer_line = [
         map_to_face(point, front_target_a, front_target_b)
@@ -468,18 +497,277 @@ def build_half_front_foot(
         return x_value, y_value, z_value
 
     seen_members: set[Tuple[str, str, str]] = set()
+    reserved_member_ids = {str(raw_member_id) for raw_member_id in front}
+    used_member_ids: set[str] = set()
+    member_instance_counts: Dict[str, int] = {}
+
+    def next_member_id(raw_member_id: object) -> str:
+        """Return a stable unique ID for each physical front/side instance."""
+
+        source_id = str(raw_member_id)
+        instance = member_instance_counts.get(source_id, 0) + 1
+        member_instance_counts[source_id] = instance
+        if instance == 1 and source_id not in used_member_ids:
+            used_member_ids.add(source_id)
+            return source_id
+
+        suffix = instance
+        candidate = f"{source_id}_{suffix}"
+        while candidate in reserved_member_ids or candidate in used_member_ids:
+            suffix += 1
+            candidate = f"{source_id}_{suffix}"
+        used_member_ids.add(candidate)
+        member_instance_counts[source_id] = suffix
+        return candidate
+
+    def project_to_segment(
+        point: Point2D,
+        segment: List[Point2D],
+        tolerance: float = 5.0,
+    ) -> Optional[Point2D]:
+        """Project a source endpoint onto a host segment when close enough."""
+        point_a, point_b = segment
+        dx = float(point_b[0]) - float(point_a[0])
+        dy = float(point_b[1]) - float(point_a[1])
+        length_squared = dx * dx + dy * dy
+        if length_squared <= 1e-12:
+            return None
+        ratio = (
+            (float(point[0]) - float(point_a[0])) * dx
+            + (float(point[1]) - float(point_a[1])) * dy
+        ) / length_squared
+        if ratio < -1e-9 or ratio > 1.0 + 1e-9:
+            return None
+        ratio = max(0.0, min(1.0, ratio))
+        projected = (
+            float(point_a[0]) + ratio * dx,
+            float(point_a[1]) + ratio * dy,
+        )
+        if math.dist((float(point[0]), float(point[1])), projected) > tolerance:
+            return None
+        return projected
+
+    def project_to_outer_main(
+        point: Point2D,
+        tolerance: float = 5.0,
+    ) -> Optional[Point2D]:
+        """Project an attachment endpoint onto 5921 when it is close enough."""
+        return project_to_segment(point, outer_main_segment, tolerance)
+
+    def project_to_center_host(
+        point: Point2D,
+        tolerance: float = 5.0,
+    ) -> Optional[Point2D]:
+        """Project the inner horizontal endpoint onto its 5907 host rod."""
+        return project_to_segment(point, center_host_segment, tolerance)
+
+    def project_to_diagonal_host(
+        point: Point2D,
+        tolerance: float = 5.0,
+    ) -> Optional[Point2D]:
+        """Project the shared 5911/5913 endpoint onto its 5905 host."""
+        return project_to_segment(point, diagonal_host_segment, tolerance)
+
+    def segment_parameter(point: Point2D, segment: List[Point2D]) -> float:
+        """Return the unbounded projection parameter of a point on a segment."""
+        point_a, point_b = segment
+        dx = float(point_b[0]) - float(point_a[0])
+        dy = float(point_b[1]) - float(point_a[1])
+        length_squared = dx * dx + dy * dy
+        if length_squared <= 1e-12:
+            return 0.0
+        return (
+            (float(point[0]) - float(point_a[0])) * dx
+            + (float(point[1]) - float(point_a[1])) * dy
+        ) / length_squared
+
+    def lies_on_outer_main(point: Point2D, tolerance: float = 5.0) -> bool:
+        """Return whether a source endpoint belongs to the 5921 main rod."""
+        return project_to_outer_main(point, tolerance) is not None
+
+    def transform_attachment(
+        point: Point2D,
+        transform: Callable[[Point2D], Point3D],
+    ) -> Point3D:
+        """Snap host attachments to the exact 5921 axis before 3D mapping."""
+        projected = project_to_outer_main(point)
+        if projected is None:
+            projected = project_to_center_host(point)
+        if projected is None:
+            projected = project_to_diagonal_host(point)
+        return transform(projected if projected is not None else point)
+
+    def is_center_connection(point: Point2D) -> bool:
+        """Return whether this is the supplied half-front center connection."""
+        return math.dist(
+            (float(point[0]), float(point[1])), source_a
+        ) <= 1e-6
+
+    def y_symmetric_node_id(value: str) -> str:
+        """Return the implicit type-2 partner ID of a generated node."""
+        tail_map = {"0": "2", "2": "0", "1": "3", "3": "1"}
+        tail = value[-1:]
+        return f"{value[:-1]}{tail_map[tail]}" if tail in tail_map else value
+
+    def transform_front_mirror_base(point: Point2D) -> Point3D:
+        """Map a front mirror point without 5905 attachment interpolation."""
+        if is_center_connection(point):
+            # The source drawing supplies only one half.  Its center endpoint
+            # is authoritative and must not acquire a second, nearly mirrored
+            # coordinate from the slightly asymmetric reconstructed interface.
+            return transform_front(point)
+        projected = project_to_outer_main(point)
+        if projected is not None:
+            return transform_side(projected)
+        projected = project_to_center_host(point)
+        if projected is not None:
+            ratio = segment_parameter(projected, center_host_segment)
+            host_start = transform_front(center_host_segment[0])
+            raw_host_end = transform_front(center_host_segment[1])
+            host_end = (-raw_host_end[0], raw_host_end[1], raw_host_end[2])
+            return tuple(
+                start + ratio * (end - start)
+                for start, end in zip(host_start, host_end)
+            )
+        x_value, y_value, z_value = transform_front(point)
+        return -x_value, y_value, z_value
+
+    def transform_front_mirror(point: Point2D) -> Point3D:
+        """Build the real left-front copy, reusing all retained host rods."""
+        projected = project_to_diagonal_host(point)
+        if projected is not None:
+            ratio = segment_parameter(projected, diagonal_host_segment)
+            host_start = transform_front_mirror_base(diagonal_host_segment[0])
+            host_end = transform_front_mirror_base(diagonal_host_segment[1])
+            return tuple(
+                start + ratio * (end - start)
+                for start, end in zip(host_start, host_end)
+            )
+        return transform_front_mirror_base(point)
+
+    def transform_side_mirror_base(point: Point2D) -> Point3D:
+        """Map a side mirror point without 5905 attachment interpolation."""
+        projected = project_to_outer_main(point)
+        if projected is not None:
+            return transform_front(projected)
+        projected = project_to_center_host(point)
+        if projected is not None:
+            x_value, y_value, z_value = transform_side(projected)
+            return -x_value, y_value, z_value
+        x_value, y_value, z_value = transform_side(point)
+        return -x_value, y_value, z_value
+
+    def transform_side_mirror(point: Point2D) -> Point3D:
+        """Build the real right-side copy, reusing all retained host rods."""
+        projected = project_to_diagonal_host(point)
+        if projected is not None:
+            ratio = segment_parameter(projected, diagonal_host_segment)
+            host_start = transform_side_mirror_base(diagonal_host_segment[0])
+            host_end = transform_side_mirror_base(diagonal_host_segment[1])
+            return tuple(
+                start + ratio * (end - start)
+                for start, end in zip(host_start, host_end)
+            )
+        return transform_side_mirror_base(point)
+
+    def transform_positive_side_attachment(
+        point: Point2D,
+        face: str,
+    ) -> Point3D:
+        """Map a 5907 attachment onto the real positive-Y host segment."""
+        projected = project_to_center_host(point)
+        if projected is None:
+            raise ValueError("塔脚侧面正向节点不在5907宿主杆件附近")
+        ratio = segment_parameter(projected, center_host_segment)
+        transform = transform_side if face == "side" else transform_side_mirror
+        host_start = transform(center_host_segment[0])
+        raw_host_end = transform(center_host_segment[1])
+        host_end = (raw_host_end[0], -raw_host_end[1], raw_host_end[2])
+        return tuple(
+            start + ratio * (end - start)
+            for start, end in zip(host_start, host_end)
+        )
+
+    def transform_positive_diagonal_attachment(
+        point: Point2D,
+        face: str,
+    ) -> Point3D:
+        """Map a 5911/5913 endpoint onto the real positive-Y 5905 host."""
+        projected = project_to_diagonal_host(point)
+        if projected is None:
+            raise ValueError("塔脚侧面正向节点不在5905宿主杆件附近")
+        ratio = segment_parameter(projected, diagonal_host_segment)
+        host_start = transform_positive_side_attachment(
+            diagonal_host_segment[0], face
+        )
+        transform = (
+            transform_side if face == "side" else transform_side_mirror_base
+        )
+        raw_host_end = transform(diagonal_host_segment[1])
+        host_end = (raw_host_end[0], -raw_host_end[1], raw_host_end[2])
+        return tuple(
+            start + ratio * (end - start)
+            for start, end in zip(host_start, host_end)
+        )
+
+    splittable_member_ids = FOOT_MAIN_MEMBER_IDS | {"5905", "5907"}
+    splittable_member_instances: List[Tuple[dict, str]] = []
     for raw_member_id, segment in front.items():
         if len(segment) != 2:
             continue
-        for face, transform, symmetry_type in (
-            # Each seed contains only half of one elevation.  Four-quadrant
-            # symmetry first completes that elevation and then copies it to
-            # the opposite face: front -> front/back, side -> left/right.
-            ("front", transform_front, 4),
-            ("side", transform_side, 4),
-        ):
-            start_id = node_id(transform(segment[0]), face, symmetry_type)
-            end_id = node_id(transform(segment[1]), face, symmetry_type)
+        source_member_id = str(raw_member_id).split("_")[0]
+        instances = [
+            ("front", transform_front),
+            ("side", transform_side),
+        ]
+        if source_member_id not in FOOT_MAIN_MEMBER_IDS:
+            # Generate the opposite X side explicitly.  Automatic X symmetry
+            # would keep using the removed duplicate-main family.  Endpoints
+            # that lie on 5921 are mapped to the other real main-leg seed.
+            instances.extend(
+                (
+                    ("front_mirror", transform_front_mirror),
+                    ("side_mirror", transform_side_mirror),
+                )
+            )
+
+        for face, transform in instances:
+            node_symmetry_type = 2
+            center_start = is_center_connection(segment[0])
+            center_end = is_center_connection(segment[1])
+            split_side_symmetry = (
+                face in {"side", "side_mirror"}
+                and (
+                    center_start
+                    or center_end
+                    or project_to_center_host(segment[0]) is not None
+                    or project_to_center_host(segment[1]) is not None
+                    or project_to_diagonal_host(segment[0]) is not None
+                    or project_to_diagonal_host(segment[1]) is not None
+                )
+            )
+            member_symmetry_type = 0 if split_side_symmetry else 2
+            if face in {"front", "side"}:
+                transformed_start = transform_attachment(segment[0], transform)
+                transformed_end = transform_attachment(segment[1], transform)
+            else:
+                transformed_start = transform(segment[0])
+                transformed_end = transform(segment[1])
+            start_face = face
+            end_face = face
+            if face == "front_mirror":
+                if lies_on_outer_main(segment[0]):
+                    start_face = "side"
+                if lies_on_outer_main(segment[1]):
+                    end_face = "side"
+            elif face == "side_mirror":
+                if lies_on_outer_main(segment[0]):
+                    start_face = "front"
+                if lies_on_outer_main(segment[1]):
+                    end_face = "front"
+
+            start_id = node_id(transformed_start, start_face, node_symmetry_type)
+            end_id = node_id(transformed_end, end_face, node_symmetry_type)
             if start_id == end_id:
                 continue
             endpoint_key = tuple(sorted((start_id, end_id)))
@@ -487,12 +775,186 @@ def build_half_front_foot(
             if unique_key in seen_members:
                 continue
             seen_members.add(unique_key)
+            member = {
+                "member_id": next_member_id(raw_member_id),
+                "node1_id": start_id,
+                "node2_id": end_id,
+                "symmetry_type": member_symmetry_type,
+            }
+            members.append(member)
+            if source_member_id in splittable_member_ids:
+                splittable_member_instances.append((member, face))
+
+            if split_side_symmetry:
+                # A side-view member incident to the center cannot use normal
+                # type-2 member symmetry: that would also mirror the noisy
+                # center coordinate and create a second node.  Expand only the
+                # outer endpoint and keep the supplied center node unchanged.
+                def mirrored_endpoint_id(
+                    source_point: Point2D,
+                    base_id: str,
+                    is_center: bool,
+                ) -> str:
+                    def reuse_symmetric_id_if_coincident(
+                        positive_point: Point3D,
+                    ) -> Optional[str]:
+                        if base_id not in node_points:
+                            return None
+                        x_value, y_value, z_value = node_points[base_id]
+                        symmetric_point = (x_value, -y_value, z_value)
+                        if math.dist(positive_point, symmetric_point) > 1e-3:
+                            return None
+                        symmetric_id = y_symmetric_node_id(base_id)
+                        node_points.setdefault(symmetric_id, symmetric_point)
+                        node_faces.setdefault(symmetric_id, set()).add(face)
+                        return symmetric_id
+
+                    if is_center:
+                        return base_id
+                    if project_to_center_host(source_point) is not None:
+                        positive_point = transform_positive_side_attachment(
+                            source_point, face
+                        )
+                        reused_id = reuse_symmetric_id_if_coincident(
+                            positive_point
+                        )
+                        if reused_id is not None:
+                            return reused_id
+                        return node_id(positive_point, face, 0)
+                    if project_to_diagonal_host(source_point) is not None:
+                        positive_point = transform_positive_diagonal_attachment(
+                            source_point, face
+                        )
+                        reused_id = reuse_symmetric_id_if_coincident(
+                            positive_point
+                        )
+                        if reused_id is not None:
+                            return reused_id
+                        return node_id(positive_point, face, 0)
+                    return y_symmetric_node_id(base_id)
+
+                mirrored_start_id = mirrored_endpoint_id(
+                    segment[0], start_id, center_start
+                )
+                mirrored_end_id = mirrored_endpoint_id(
+                    segment[1], end_id, center_end
+                )
+                for base_id, mirrored_id in (
+                    (start_id, mirrored_start_id),
+                    (end_id, mirrored_end_id),
+                ):
+                    if mirrored_id == base_id or base_id not in node_points:
+                        continue
+                    x_value, y_value, z_value = node_points[base_id]
+                    node_points.setdefault(
+                        mirrored_id, (x_value, -y_value, z_value)
+                    )
+                    node_faces.setdefault(mirrored_id, set()).add(face)
+                mirrored_key = tuple(sorted((mirrored_start_id, mirrored_end_id)))
+                mirrored_unique_key = (
+                    str(raw_member_id),
+                    mirrored_key[0],
+                    mirrored_key[1],
+                )
+                if (
+                    mirrored_start_id != mirrored_end_id
+                    and mirrored_unique_key not in seen_members
+                ):
+                    seen_members.add(mirrored_unique_key)
+                    mirrored_member = {
+                        "member_id": next_member_id(raw_member_id),
+                        "node1_id": mirrored_start_id,
+                        "node2_id": mirrored_end_id,
+                        "symmetry_type": 0,
+                    }
+                    members.append(mirrored_member)
+                    if source_member_id in splittable_member_ids:
+                        splittable_member_instances.append(
+                            (mirrored_member, face)
+                        )
+
+    endpoint_use_count: Dict[str, int] = {}
+    for member in members:
+        for key in ("node1_id", "node2_id"):
+            endpoint = str(member[key])
+            endpoint_use_count[endpoint] = endpoint_use_count.get(endpoint, 0) + 1
+
+    # An endpoint lying on a host rod must be the same topological node, not
+    # merely a coincident point.  Split retained 5921 legs and 5907 inner rods
+    # at all face-specific attachment nodes while preserving their straight
+    # continuous geometry.
+    for host_member, face in splittable_member_instances:
+        start_point = node_points[host_member["node1_id"]]
+        end_point = node_points[host_member["node2_id"]]
+        direction = tuple(end - start for start, end in zip(start_point, end_point))
+        length_squared = sum(value * value for value in direction)
+        if length_squared <= 1e-12:
+            continue
+
+        interior_candidates: List[Tuple[float, str]] = []
+        for candidate_id, candidate_point in node_points.items():
+            offset = tuple(
+                candidate - start
+                for candidate, start in zip(candidate_point, start_point)
+            )
+            ratio = sum(a * b for a, b in zip(offset, direction)) / length_squared
+            if ratio <= 1e-9 or ratio >= 1.0 - 1e-9:
+                continue
+            projected = tuple(
+                start + ratio * delta
+                for start, delta in zip(start_point, direction)
+            )
+            # Coordinates are exported at six decimals.  Interpolating the
+            # rounded 3D endpoints can accumulate a little over 1e-4 mm, so
+            # retain a sub-millimetre tolerance well below the 0.01 mm closure
+            # threshold used by the model checker.
+            if math.dist(candidate_point, projected) <= 1e-3:
+                interior_candidates.append((ratio, candidate_id))
+
+        interior_candidates.sort(key=lambda item: item[0])
+        selected_interior_ids: List[str] = []
+        index = 0
+        while index < len(interior_candidates):
+            group = [interior_candidates[index]]
+            index += 1
+            while (
+                index < len(interior_candidates)
+                and abs(interior_candidates[index][0] - group[0][0]) <= 1e-6
+            ):
+                group.append(interior_candidates[index])
+                index += 1
+            _, selected_id = max(
+                group,
+                key=lambda item: (
+                    endpoint_use_count.get(item[1], 0),
+                    face in node_faces.get(item[1], set()),
+                ),
+            )
+            selected_interior_ids.append(selected_id)
+
+        ordered_ids = [
+            str(host_member["node1_id"]),
+            *selected_interior_ids,
+            str(host_member["node2_id"]),
+        ]
+        if len(ordered_ids) <= 2:
+            continue
+
+        members.remove(host_member)
+        source_member_id = str(host_member["member_id"]).split("_")[0]
+        for index, (start_id, end_id) in enumerate(zip(ordered_ids, ordered_ids[1:])):
+            if start_id == end_id:
+                continue
             members.append(
                 {
-                    "member_id": str(raw_member_id),
+                    "member_id": (
+                        host_member["member_id"]
+                        if index == 0
+                        else next_member_id(source_member_id)
+                    ),
                     "node1_id": start_id,
                     "node2_id": end_id,
-                    "symmetry_type": symmetry_type,
+                    "symmetry_type": host_member["symmetry_type"],
                 }
             )
 

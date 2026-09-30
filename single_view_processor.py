@@ -260,8 +260,103 @@ def _pick_interface_layer(nodes, mode):
     }
 
 
-def _apply_single_view_transform(nodes, xy_scale, x_shift, y_shift, z_shift):
+def _resolve_single_view_points(nodes):
+    """Resolve real/reference nodes for splice fitting without expanding symmetry."""
+
+    points = {}
+    pending = []
+
+    def add_with_symmetry(node, point):
+        node_id = str(node.get("node_id", ""))
+        points[node_id] = point
+        symmetry_type = int(node.get("symmetry_type", 0) or 0)
+        deltas = (symmetry_type,) if symmetry_type in (1, 2, 3) else ()
+        if symmetry_type == 4:
+            deltas = (1, 2, 3)
+        for delta in deltas:
+            suffix = node_id[-2:]
+            if not suffix.isdigit():
+                continue
+            x_value, y_value, z_value = point
+            symmetric_point = (
+                -x_value if delta in (1, 3) else x_value,
+                -y_value if delta in (2, 3) else y_value,
+                z_value,
+            )
+            points[f"{node_id[:-2]}{int(suffix) + delta:02d}"] = symmetric_point
+
+    for node in nodes or []:
+        node_id = str(node.get("node_id", ""))
+        xyz = _get_numeric_xyz(node)
+        if node_id and xyz is not None:
+            add_with_symmetry(node, xyz)
+        elif node_id:
+            pending.append(node)
+
+    while pending:
+        unresolved = []
+        resolved_count = 0
+        for node in pending:
+            values = [node.get(axis) for axis in ("X", "Y", "Z")]
+            reference_indexes = [
+                index for index, value in enumerate(values)
+                if isinstance(value, str)
+            ]
+            real_indexes = [index for index in range(3) if index not in reference_indexes]
+            if len(reference_indexes) != 2 or len(real_indexes) != 1:
+                unresolved.append(node)
+                continue
+            references = []
+            for index in reference_indexes:
+                reference = str(values[index])
+                if reference in points:
+                    references.append(reference)
+                elif reference.startswith("1") and reference[1:] in points:
+                    references.append(reference[1:])
+                else:
+                    references = []
+                    break
+            if len(references) != 2:
+                unresolved.append(node)
+                continue
+            try:
+                real_value = float(values[real_indexes[0]])
+            except (TypeError, ValueError):
+                unresolved.append(node)
+                continue
+            start, end = points[references[0]], points[references[1]]
+            real_index = real_indexes[0]
+            span = end[real_index] - start[real_index]
+            if abs(span) <= 1e-12:
+                unresolved.append(node)
+                continue
+            ratio = (real_value - start[real_index]) / span
+            coordinates = tuple(
+                real_value
+                if index == real_index
+                else start[index] + ratio * (end[index] - start[index])
+                for index in range(3)
+            )
+            add_with_symmetry(node, coordinates)
+            resolved_count += 1
+        if resolved_count == 0:
+            break
+        pending = unresolved
+    return points
+
+
+def _apply_single_view_transform(
+    nodes,
+    xy_scale,
+    x_shift,
+    y_shift,
+    z_shift,
+    z_x_slope=0.0,
+    z_x_origin=0.0,
+):
+    resolved_points = _resolve_single_view_points(nodes)
     for node in nodes:
+        node_id = str(node.get("node_id", ""))
         x_value = _numeric_value(node.get("X"))
         if x_value is not None:
             node["X"] = round(x_value * xy_scale + x_shift, 6)
@@ -272,7 +367,20 @@ def _apply_single_view_transform(nodes, xy_scale, x_shift, y_shift, z_shift):
 
         z_value = _numeric_value(node.get("Z"))
         if z_value is not None:
-            node["Z"] = round(z_value + z_shift, 6)
+            resolved_point = resolved_points.get(node_id, (x_value, 0.0, 0.0))
+            if node.get("_view_face") == "side":
+                # Side nodes are created by (x, y) -> (y, -x).  The splice
+                # height correction must still follow the source front X;
+                # using the rotated side X applies the opposite-side offset.
+                resolved_x = -resolved_point[1]
+            else:
+                resolved_x = resolved_point[0]
+            x_dependent_shift = (
+                z_x_slope * (resolved_x - z_x_origin)
+                if resolved_x is not None
+                else 0.0
+            )
+            node["Z"] = round(z_value + z_shift + x_dependent_shift, 6)
 
 
 def correct_single_lines(lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian):
@@ -516,30 +624,31 @@ def connect_single_inner(prev_jiedian01, lines01_ganjian, lines01_jiedian, lines
                 candidates.append((node, xyz))
         if not candidates:
             return None
-        z_ref = max(p[2] for _, p in candidates) if mode == "top" else min(p[2] for _, p in candidates)
-        layer = [(node, p) for node, p in candidates if abs(p[2] - z_ref) <= 0.08]
-        if not layer:
-            layer = [max(candidates, key=lambda item: item[1][2]) if mode == "top" else min(candidates, key=lambda item: item[1][2])]
-        xs = [p[0] for _, p in layer]
-        ys = [p[1] for _, p in layer]
-        x_span = max(xs) - min(xs)
-        if x_span > 1e-9:
-            center_x = (min(xs) + max(xs)) / 2.0
-            half_width = x_span / 2.0
-        else:
-            # A normalized high/low-slope drawing exports only its trusted
-            # physical support; the opposite support is virtual.  The lone
-            # endpoint therefore represents one tower half-width, not a
-            # zero-width interface.  Treating it as 1e-9 produces an enormous
-            # splice scale and turns every member in the sheet into a nearly
-            # infinite line.
-            center_x = 0.0
-            half_width = abs(xs[0])
+        min_x = min(point[0] for _, point in candidates)
+        max_x = max(point[0] for _, point in candidates)
+        center_guess = (min_x + max_x) / 2.0
+        left_candidates = [item for item in candidates if item[1][0] < center_guess]
+        right_candidates = [item for item in candidates if item[1][0] > center_guess]
+        if not left_candidates or not right_candidates:
+            return None
 
-        return {"node": layer[0][0], "z": z_ref,
-                "center_x": center_x,
-                "center_y": (min(ys) + max(ys)) / 2.0,
-                "half_width": max(half_width, 1e-9)}
+        selector = max if mode == "top" else min
+        left = selector(left_candidates, key=lambda item: item[1][2])
+        right = selector(right_candidates, key=lambda item: item[1][2])
+        if left[1][0] > right[1][0]:
+            left, right = right, left
+        x_span = right[1][0] - left[1][0]
+        if x_span <= 1e-9:
+            return None
+
+        return {
+            "left": left,
+            "right": right,
+            "center_x": (left[1][0] + right[1][0]) / 2.0,
+            "center_y": (left[1][1] + right[1][1]) / 2.0,
+            "z": (left[1][2] + right[1][2]) / 2.0,
+            "half_width": x_span / 2.0,
+        }
 
     prev_interface = _pick_exported_interface(prev_jiedian01, "top")
     if prev_interface is None or not lines01_jiedian:
@@ -548,37 +657,59 @@ def connect_single_inner(prev_jiedian01, lines01_ganjian, lines01_jiedian, lines
     if now_interface is None:
         return lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian
 
-    prev_key = str(prev_interface["node"].get("node_id", ""))
-    now_key = str(now_interface["node"].get("node_id", ""))
-    if not prev_key or not now_key:
-        return lines01_ganjian, lines01_jiedian, lines0201_ganjian, lines0201_jiedian
-
     xy_scale = (abs(prev_interface["half_width"]) / abs(now_interface["half_width"])
                 if abs(now_interface["half_width"]) >= 1e-9 else 1.0)
     x_shift = prev_interface["center_x"] - now_interface["center_x"] * xy_scale
     y_shift = prev_interface["center_y"] - now_interface["center_y"] * xy_scale
-    z_shift = prev_interface["z"] - now_interface["z"]
+    prev_left_z = prev_interface["left"][1][2]
+    prev_right_z = prev_interface["right"][1][2]
+    now_left = now_interface["left"][1]
+    now_right = now_interface["right"][1]
+    left_z_shift = prev_left_z - now_left[2]
+    right_z_shift = prev_right_z - now_right[2]
+    now_x_span = now_right[0] - now_left[0]
+    z_x_slope = (right_z_shift - left_z_shift) / now_x_span
 
-    _apply_single_view_transform(lines01_jiedian, xy_scale, x_shift, y_shift, z_shift)
-    _apply_single_view_transform(lines0201_jiedian, xy_scale, x_shift, y_shift, z_shift)
+    _apply_single_view_transform(
+        lines01_jiedian,
+        xy_scale,
+        x_shift,
+        y_shift,
+        left_z_shift,
+        z_x_slope,
+        now_left[0],
+    )
+    _apply_single_view_transform(
+        lines0201_jiedian,
+        xy_scale,
+        x_shift,
+        y_shift,
+        left_z_shift,
+        z_x_slope,
+        now_left[0],
+    )
+
+    def _is_near_interface_z(interface, z_value):
+        return min(
+            abs(z_value - interface["left"][1][2]),
+            abs(z_value - interface["right"][1][2]),
+        ) <= 0.08
 
     previous_seam = []
+    previous_points = _resolve_single_view_points(prev_jiedian01)
     for node in prev_jiedian01 or []:
-        if int(node.get("node_type", 0) or 0) != 11 or node.get("_view_face") not in (None, "front"):
-            continue
-        xyz = _get_numeric_xyz(node)
-        if xyz is not None and abs(xyz[2] - prev_interface["z"]) <= 0.08:
+        xyz = previous_points.get(str(node.get("node_id", "")))
+        if xyz is not None and _is_near_interface_z(prev_interface, xyz[2]):
             previous_seam.append((node, xyz))
     current_seam = []
+    current_points = _resolve_single_view_points(lines0201_jiedian)
     for node in lines0201_jiedian or []:
-        if int(node.get("node_type", 0) or 0) != 11 or node.get("_view_face") not in (None, "front"):
-            continue
-        xyz = _get_numeric_xyz(node)
-        if xyz is not None and abs(xyz[2] - prev_interface["z"]) <= 0.08:
+        xyz = current_points.get(str(node.get("node_id", "")))
+        if xyz is not None and _is_near_interface_z(prev_interface, xyz[2]):
             current_seam.append((node, xyz))
 
     seam_id_map = {}
-    used_current, used_previous = set(), set()
+    used_current = set()
     for distance, current_node, previous_node in sorted(
         ((math.dist(cp, pp), cn, pn) for cn, cp in current_seam for pn, pp in previous_seam),
         key=lambda item: item[0],
@@ -587,10 +718,13 @@ def connect_single_inner(prev_jiedian01, lines01_ganjian, lines01_jiedian, lines
         previous_id = str(previous_node.get("node_id", ""))
         if not current_id or not previous_id or distance > 0.15:
             continue
-        if current_id in used_current or previous_id in used_previous or current_id == previous_id:
+        # 多根横杆/斜杆可以在同一个物理接口节点汇合，因此允许多个当前
+        # 图纸节点复用同一个上一张图纸节点；这里只限制一个当前节点不要
+        # 被重复映射。最终合并阶段还会解析 12 类和对称节点做完整归并。
+        if current_id in used_current or current_id == previous_id:
             continue
         seam_id_map[current_id] = previous_id
-        used_current.add(current_id); used_previous.add(previous_id)
+        used_current.add(current_id)
 
     def _remap_seam_reference(value):
         """Remap an interface node together with its symmetry siblings."""
