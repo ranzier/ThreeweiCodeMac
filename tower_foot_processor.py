@@ -19,11 +19,11 @@ from dual_view_core import load_and_parse_data
 Point2D = Tuple[float, float]
 Point3D = Tuple[float, float, float]
 CoordDict = Dict[str, List[Point2D]]
+Segment2D = Tuple[Point2D, Point2D]
 
 FOOT_FILENAME = "59_front.txt"
 CONNECTION_DRAWING_PREFIX = "13"
 COORDINATE_DIGITS = 6
-FOOT_MAIN_MEMBER_IDS = {"5921"}
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,24 @@ class FootInterface:
     front_connection_points: Tuple[Point3D, Point3D]
     side_connection_node_ids: Tuple[str, str]
     side_connection_points: Tuple[Point3D, Point3D]
+
+
+@dataclass(frozen=True)
+class FootMainGeometry:
+    """Geometrically identified boundary members of a half-front tower foot.
+
+    The outer main rod is the near-vertical boundary. The inner main rod may
+    be exported as one segment or as several nearly collinear segments, so its
+    member IDs and its lowest/highest segments are retained separately.
+    """
+
+    outer_member_id: str
+    inner_member_ids: Tuple[str, ...]
+    outer_segment: Segment2D
+    center_host_segment: Segment2D
+    diagonal_host_segment: Segment2D
+    inner_connection: Point2D
+    outer_connection: Point2D
 
 
 def is_half_front_only_file(path: str) -> bool:
@@ -243,9 +261,9 @@ def find_drawing_13_interface(
         side_face, key=lambda item: (abs(item[1][1] - center_y), item[0])
     )
 
-    # Match drawing 59's 5921 slope against the drawing-13 class-1 rods.  The
-    # positive-slope match is the original right front leg; the opposite leg
-    # supplies the rotated side seed before Y symmetry completes the model.
+    # Match the detected outer-foot slope against drawing 13's class-1 rods.
+    # The opposite leg supplies the rotated side seed before Y symmetry
+    # completes the model.
     main_leg_candidates: List[Tuple[float, str, Point3D]] = []
     for member in member_records:
         member_id = str(member.get("member_id", "")).split("_")[0]
@@ -295,44 +313,167 @@ def find_drawing_13_interface(
     )
 
 
-def _find_foot_connection_points(front: CoordDict) -> Tuple[Point2D, Point2D]:
-    """Return the two upper ends of the tower-foot main rods.
+def _base_member_id(raw_member_id: object) -> str:
+    """Return the drawing member ID without a generated instance suffix."""
 
-    In drawing 59 these are the two lowest CAD-Y endpoints, ``(882, 690)`` and
-    ``(2370, 649)``. They are the blue-circled points in the reference image;
-    the high fan vertex is not a connection point.
+    return str(raw_member_id).split("_")[0]
+
+
+def _detect_foot_main_geometry(front: CoordDict) -> FootMainGeometry:
+    """Identify the two tower-foot boundary rods from their geometry.
+
+    A half-front tower foot forms a fan at its largest CAD-Y vertex. The two
+    longest downward segments incident to that vertex are its boundary rods:
+    the more vertical one is the outer rod and the other is the inner rod.
+    The inner rod is then followed downward through connected, nearly
+    collinear segments. This supports both a single exported inner member and
+    drawings where that same physical rod is split at an attachment node.
     """
 
-    def segment(member_id: str) -> List[Point2D]:
-        for raw_id, raw_segment in front.items():
-            if str(raw_id).split("_")[0] == member_id:
-                return [
-                    (float(point[0]), float(point[1])) for point in raw_segment
-                ]
-        raise ValueError(f"塔脚图纸缺少一类杆件 {member_id}")
-
-    center_connection = min(segment("5907"), key=lambda point: point[1])
-    right_connection = min(segment("5921"), key=lambda point: point[1])
-    return center_connection, right_connection
-
-
-def _right_foot_main_slope(front: CoordDict) -> float:
-    """Return 5921's signed dx/dy slope for matching the right tower leg."""
-
-    for raw_id, raw_segment in front.items():
-        if str(raw_id).split("_")[0] != "5921" or len(raw_segment) != 2:
+    records: List[Tuple[str, Segment2D]] = []
+    for raw_member_id, raw_segment in front.items():
+        if len(raw_segment) != 2:
             continue
-        lower, upper = sorted(raw_segment, key=lambda point: float(point[1]))
-        dy = float(upper[1]) - float(lower[1])
-        if abs(dy) <= 1e-9:
+        segment = (
+            (float(raw_segment[0][0]), float(raw_segment[0][1])),
+            (float(raw_segment[1][0]), float(raw_segment[1][1])),
+        )
+        if math.dist(*segment) <= 1e-9:
+            continue
+        records.append((_base_member_id(raw_member_id), segment))
+    if len(records) < 2:
+        raise ValueError("塔脚图纸有效杆件不足，无法识别两根主材")
+
+    endpoint_tolerance = 5.0
+
+    def endpoint_near(segment: Segment2D, point: Point2D) -> Optional[int]:
+        distances = (math.dist(segment[0], point), math.dist(segment[1], point))
+        index = 0 if distances[0] <= distances[1] else 1
+        return index if distances[index] <= endpoint_tolerance else None
+
+    # Prefer the highest junction with at least two downward incident rods.
+    endpoint_candidates = [point for _, segment in records for point in segment]
+    apex: Optional[Point2D] = None
+    incident: List[Tuple[str, Segment2D, Point2D]] = []
+    for candidate in sorted(
+        endpoint_candidates,
+        key=lambda point: point[1],
+        reverse=True,
+    ):
+        candidate_incident: List[Tuple[str, Segment2D, Point2D]] = []
+        for member_id, segment in records:
+            endpoint_index = endpoint_near(segment, candidate)
+            if endpoint_index is None:
+                continue
+            other = segment[1 - endpoint_index]
+            if other[1] < candidate[1] - 1e-9:
+                candidate_incident.append((member_id, segment, other))
+        if len(candidate_incident) >= 2:
+            apex = candidate
+            incident = candidate_incident
             break
-        return (float(upper[0]) - float(lower[0])) / dy
-    raise ValueError("塔脚图纸无法计算5921杆件斜率")
+    if apex is None:
+        raise ValueError("塔脚图纸无法识别两根主材的公共扇形顶点")
+
+    # Braces may also meet the apex; the main boundaries have the greatest
+    # vertical reach from it.
+    incident.sort(key=lambda item: apex[1] - item[2][1], reverse=True)
+    boundary_candidates = incident[:2]
+
+    def absolute_slope(item: Tuple[str, Segment2D, Point2D]) -> float:
+        _, _, lower = item
+        dy = apex[1] - lower[1]
+        return abs(apex[0] - lower[0]) / dy if dy > 1e-9 else math.inf
+
+    outer_record = min(boundary_candidates, key=absolute_slope)
+    inner_record = max(boundary_candidates, key=absolute_slope)
+    outer_member_id, outer_segment, outer_connection = outer_record
+    inner_member_id, top_inner_segment, junction = inner_record
+
+    # Follow a split inner rod toward smaller CAD-Y. Connectivity alone is
+    # insufficient because braces share these nodes; also require collinearity.
+    inner_chain: List[Tuple[str, Segment2D]] = [
+        (inner_member_id, top_inner_segment)
+    ]
+    used_segments = {id(top_inner_segment)}
+    reference_dx = apex[0] - junction[0]
+    reference_dy = apex[1] - junction[1]
+    reference_length = math.hypot(reference_dx, reference_dy)
+    while reference_length > 1e-9:
+        continuations: List[Tuple[float, float, str, Segment2D, Point2D]] = []
+        for member_id, segment in records:
+            if id(segment) in used_segments:
+                continue
+            endpoint_index = endpoint_near(segment, junction)
+            if endpoint_index is None:
+                continue
+            lower = segment[1 - endpoint_index]
+            if lower[1] >= junction[1] - 1e-9:
+                continue
+            dx = junction[0] - lower[0]
+            dy = junction[1] - lower[1]
+            length = math.hypot(dx, dy)
+            if length <= 1e-9:
+                continue
+            sine = abs(reference_dx * dy - reference_dy * dx) / (
+                reference_length * length
+            )
+            cosine = (reference_dx * dx + reference_dy * dy) / (
+                reference_length * length
+            )
+            if sine <= 0.02 and cosine > 0.0:
+                continuations.append((sine, -dy, member_id, segment, lower))
+        if not continuations:
+            break
+        _, _, member_id, segment, lower = min(continuations)
+        inner_chain.insert(0, (member_id, segment))
+        used_segments.add(id(segment))
+        junction = lower
+
+    inner_connection = min(inner_chain[0][1], key=lambda point: point[1])
+    outer_connection = min(outer_segment, key=lambda point: point[1])
+    if math.dist(inner_connection, outer_connection) <= 1e-9:
+        raise ValueError("塔脚图纸识别出的两根主材连接端点重合")
+
+    return FootMainGeometry(
+        outer_member_id=outer_member_id,
+        inner_member_ids=tuple(member_id for member_id, _ in inner_chain),
+        outer_segment=outer_segment,
+        center_host_segment=inner_chain[0][1],
+        diagonal_host_segment=inner_chain[-1][1],
+        inner_connection=inner_connection,
+        outer_connection=outer_connection,
+    )
+
+
+def _find_foot_connection_points(
+    front: CoordDict,
+    geometry: Optional[FootMainGeometry] = None,
+) -> Tuple[Point2D, Point2D]:
+    """Return the low-CAD-Y connection endpoints of the two main rods."""
+
+    detected = geometry or _detect_foot_main_geometry(front)
+    return detected.inner_connection, detected.outer_connection
+
+
+def _right_foot_main_slope(
+    front: CoordDict,
+    geometry: Optional[FootMainGeometry] = None,
+) -> float:
+    """Return the detected outer main rod's signed dx/dy slope."""
+
+    detected = geometry or _detect_foot_main_geometry(front)
+    lower, upper = sorted(detected.outer_segment, key=lambda point: point[1])
+    dy = upper[1] - lower[1]
+    if abs(dy) <= 1e-9:
+        raise ValueError("塔脚图纸外侧主材高度跨度无效")
+    return (upper[0] - lower[0]) / dy
 
 
 def build_half_front_foot(
     path: str,
     interface: FootInterface,
+    geometry: Optional[FootMainGeometry] = None,
 ) -> Tuple[List[dict], List[dict]]:
     """Complete the front/side tower-foot geometry and attach it to drawing 13."""
 
@@ -340,7 +481,8 @@ def build_half_front_foot(
     if not front or side:
         raise ValueError(f"{os.path.basename(path)} 不是仅含半幅正视图的塔脚文件")
 
-    source_a, source_b = _find_foot_connection_points(front)
+    main_geometry = geometry or _detect_foot_main_geometry(front)
+    source_a, source_b = _find_foot_connection_points(front, main_geometry)
     source_dx = source_b[0] - source_a[0]
     source_dy = source_b[1] - source_a[1]
     source_length = math.hypot(source_dx, source_dy)
@@ -414,36 +556,11 @@ def build_half_front_foot(
             interface.z + height * scale_z,
         )
 
-    outer_main_segment = next(
-        (
-            segment
-            for raw_member_id, segment in front.items()
-            if str(raw_member_id).split("_")[0] == "5921" and len(segment) == 2
-        ),
-        None,
-    )
-    if outer_main_segment is None:
-        raise ValueError("塔脚图纸缺少控制外倾角的5921杆件")
-    center_host_segment = next(
-        (
-            segment
-            for raw_member_id, segment in front.items()
-            if str(raw_member_id).split("_")[0] == "5907" and len(segment) == 2
-        ),
-        None,
-    )
-    if center_host_segment is None:
-        raise ValueError("塔脚图纸缺少承接横杆节点的5907杆件")
-    diagonal_host_segment = next(
-        (
-            segment
-            for raw_member_id, segment in front.items()
-            if str(raw_member_id).split("_")[0] == "5905" and len(segment) == 2
-        ),
-        None,
-    )
-    if diagonal_host_segment is None:
-        raise ValueError("塔脚图纸缺少承接5911/5913节点的5905杆件")
+    outer_main_segment = main_geometry.outer_segment
+    center_host_segment = main_geometry.center_host_segment
+    diagonal_host_segment = main_geometry.diagonal_host_segment
+    outer_main_member_ids = {main_geometry.outer_member_id}
+    inner_main_member_ids = set(main_geometry.inner_member_ids)
 
     front_outer_line = [
         map_to_face(point, front_target_a, front_target_b)
@@ -460,7 +577,7 @@ def build_half_front_foot(
         point_a, point_b = line
         z_span = point_b[2] - point_a[2]
         if abs(z_span) <= 1e-9:
-            raise ValueError("塔脚5921杆件高度跨度无效")
+            raise ValueError("塔脚外侧主材高度跨度无效")
         ratio = (z_value - point_a[2]) / z_span
         return point_a[axis_index] + ratio * (
             point_b[axis_index] - point_a[axis_index]
@@ -522,7 +639,7 @@ def build_half_front_foot(
 
     def project_to_segment(
         point: Point2D,
-        segment: List[Point2D],
+        segment: Segment2D,
         tolerance: float = 5.0,
     ) -> Optional[Point2D]:
         """Project a source endpoint onto a host segment when close enough."""
@@ -551,24 +668,24 @@ def build_half_front_foot(
         point: Point2D,
         tolerance: float = 5.0,
     ) -> Optional[Point2D]:
-        """Project an attachment endpoint onto 5921 when it is close enough."""
+        """Project an attachment endpoint onto the outer main rod."""
         return project_to_segment(point, outer_main_segment, tolerance)
 
     def project_to_center_host(
         point: Point2D,
         tolerance: float = 5.0,
     ) -> Optional[Point2D]:
-        """Project the inner horizontal endpoint onto its 5907 host rod."""
+        """Project an attachment endpoint onto the lower inner main segment."""
         return project_to_segment(point, center_host_segment, tolerance)
 
     def project_to_diagonal_host(
         point: Point2D,
         tolerance: float = 5.0,
     ) -> Optional[Point2D]:
-        """Project the shared 5911/5913 endpoint onto its 5905 host."""
+        """Project an attachment endpoint onto the upper inner main segment."""
         return project_to_segment(point, diagonal_host_segment, tolerance)
 
-    def segment_parameter(point: Point2D, segment: List[Point2D]) -> float:
+    def segment_parameter(point: Point2D, segment: Segment2D) -> float:
         """Return the unbounded projection parameter of a point on a segment."""
         point_a, point_b = segment
         dx = float(point_b[0]) - float(point_a[0])
@@ -582,14 +699,14 @@ def build_half_front_foot(
         ) / length_squared
 
     def lies_on_outer_main(point: Point2D, tolerance: float = 5.0) -> bool:
-        """Return whether a source endpoint belongs to the 5921 main rod."""
+        """Return whether a source endpoint belongs to the outer main rod."""
         return project_to_outer_main(point, tolerance) is not None
 
     def transform_attachment(
         point: Point2D,
         transform: Callable[[Point2D], Point3D],
     ) -> Point3D:
-        """Snap host attachments to the exact 5921 axis before 3D mapping."""
+        """Snap host attachments to an exact main-rod axis before 3D mapping."""
         projected = project_to_outer_main(point)
         if projected is None:
             projected = project_to_center_host(point)
@@ -674,10 +791,10 @@ def build_half_front_foot(
         point: Point2D,
         face: str,
     ) -> Point3D:
-        """Map a 5907 attachment onto the real positive-Y host segment."""
+        """Map a lower-inner attachment onto the positive-Y host segment."""
         projected = project_to_center_host(point)
         if projected is None:
-            raise ValueError("塔脚侧面正向节点不在5907宿主杆件附近")
+            raise ValueError("塔脚侧面正向节点不在内侧主材下段附近")
         ratio = segment_parameter(projected, center_host_segment)
         transform = transform_side if face == "side" else transform_side_mirror
         host_start = transform(center_host_segment[0])
@@ -692,10 +809,10 @@ def build_half_front_foot(
         point: Point2D,
         face: str,
     ) -> Point3D:
-        """Map a 5911/5913 endpoint onto the real positive-Y 5905 host."""
+        """Map an upper-inner attachment onto the positive-Y host segment."""
         projected = project_to_diagonal_host(point)
         if projected is None:
-            raise ValueError("塔脚侧面正向节点不在5905宿主杆件附近")
+            raise ValueError("塔脚侧面正向节点不在内侧主材上段附近")
         ratio = segment_parameter(projected, diagonal_host_segment)
         host_start = transform_positive_side_attachment(
             diagonal_host_segment[0], face
@@ -710,20 +827,20 @@ def build_half_front_foot(
             for start, end in zip(host_start, host_end)
         )
 
-    splittable_member_ids = FOOT_MAIN_MEMBER_IDS | {"5905", "5907"}
+    splittable_member_ids = outer_main_member_ids | inner_main_member_ids
     splittable_member_instances: List[Tuple[dict, str]] = []
     for raw_member_id, segment in front.items():
         if len(segment) != 2:
             continue
-        source_member_id = str(raw_member_id).split("_")[0]
+        source_member_id = _base_member_id(raw_member_id)
         instances = [
             ("front", transform_front),
             ("side", transform_side),
         ]
-        if source_member_id not in FOOT_MAIN_MEMBER_IDS:
+        if source_member_id not in outer_main_member_ids:
             # Generate the opposite X side explicitly.  Automatic X symmetry
             # would keep using the removed duplicate-main family.  Endpoints
-            # that lie on 5921 are mapped to the other real main-leg seed.
+            # that lie on the outer rod map to the other real main-leg seed.
             instances.extend(
                 (
                     ("front_mirror", transform_front_mirror),
@@ -880,7 +997,7 @@ def build_half_front_foot(
             endpoint_use_count[endpoint] = endpoint_use_count.get(endpoint, 0) + 1
 
     # An endpoint lying on a host rod must be the same topological node, not
-    # merely a coincident point.  Split retained 5921 legs and 5907 inner rods
+    # merely a coincident point. Split all retained outer/inner main-rod parts
     # at all face-specific attachment nodes while preserving their straight
     # continuous geometry.
     for host_member, face in splittable_member_instances:
@@ -969,10 +1086,11 @@ def attach_half_front_foot(
     """Return tower data with the independently reconstructed foot appended."""
 
     front, _ = load_and_parse_data(path)
+    main_geometry = _detect_foot_main_geometry(front)
     interface = find_drawing_13_interface(
         tower_members,
         tower_nodes,
-        foot_main_slope=_right_foot_main_slope(front),
+        foot_main_slope=_right_foot_main_slope(front, main_geometry),
     )
-    foot_members, foot_nodes = build_half_front_foot(path, interface)
+    foot_members, foot_nodes = build_half_front_foot(path, interface, main_geometry)
     return tower_members + foot_members, tower_nodes + foot_nodes
