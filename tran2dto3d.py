@@ -178,7 +178,7 @@ def tran2dto3d(
         missing_member_ids = sorted(set(missing_danjia + missing_tashen))
         if missing_member_ids:
             print(
-                "警告：以下杆件在规格文件中没有匹配项，规格将留空："
+                "警告：以下杆件在规格文件中没有匹配项，已使用默认规格110X12："
                 + ", ".join(missing_member_ids)
             )
 

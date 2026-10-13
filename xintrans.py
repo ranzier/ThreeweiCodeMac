@@ -940,6 +940,16 @@ def trans(
     coordinatesBottom_data = namespace.get('coordinatesBottom_data', {})
     coordinatesOverhead_data = namespace.get('coordinatesOverhead_data', {})
 
+    # 兼容未加引号的 ``4-100_1``：Python 会将其计算成负数 -997。
+    for coordinates_data in (
+        coordinatesFront_data, coordinatesBottom_data, coordinatesOverhead_data
+    ):
+        for index in range(2):
+            negative_id = drawing_id - (1001 + index)
+            if negative_id in coordinates_data:
+                normalized_id = drawing_id * 10000 + 100 + index
+                coordinates_data[normalized_id] = coordinates_data.pop(negative_id)
+
     yuzhi = 150   #阈值
     data = transform_data(data1) # 将担架和塔身连接点每四个分为一组
 

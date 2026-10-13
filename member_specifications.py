@@ -67,8 +67,10 @@ def _member_specification(
 ):
     member_id = str(member_id).strip()
 
-    base_id, separator, instance = member_id.rpartition("_")
-    if separator and instance.isdigit() and base_id in specifications:
+    base_id = member_id
+    while "_" in base_id and base_id.rpartition("_")[2].isdigit():
+        base_id = base_id.rpartition("_")[0]
+    if base_id != member_id and base_id in specifications:
         return specifications[base_id]
 
     # xintrans loads unquoted numeric keys with exec(), so IDs such as 156_1
@@ -98,7 +100,7 @@ def add_member_specifications(
             specifications,
             prefer_numeric_instance_suffix=prefer_numeric_instance_suffix,
         )
-        member["specifications"] = specification
+        member["specifications"] = specification or "110X12"
         if not specification:
             missing_member_ids.add(member_id)
 
